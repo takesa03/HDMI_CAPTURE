@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <UseWPF>true</UseWPF>
+    <StartupUri>MainWindow.xaml</StartupUri>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\HDMICapture.Core\HDMICapture.Core.csproj" />
+  </ItemGroup>
+
+</Project>

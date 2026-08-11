@@ -1,0 +1,65 @@
+<Window x:Class="HDMICapture.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="HDMI Capture - NDI Sender" Height="800" Width="1280" Background="#F0F0F0">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- 上部: コントロール -->
+        <StackPanel Grid.Row="0" Orientation="Vertical" Margin="12">
+            <!-- ステータスバー -->
+            <Border Name="statusBorder" Background="#FF4444" CornerRadius="4" Padding="8,4" Margin="0,0,0,12" Width="140" HorizontalAlignment="Left">
+                <TextBlock Name="labelStatus" Text="● 停止中" FontSize="14" Foreground="White" FontWeight="Bold"/>
+            </Border>
+
+
+        </StackPanel>
+
+        <!-- 中央: プレビュー -->
+        <Border Grid.Row="1" BorderThickness="1" BorderBrush="#CCCCCC" Margin="12,0,12,12" Background="#000000">
+            <Grid>
+                <Image Name="imagePreview" Stretch="Uniform"/>
+            </Grid>
+        </Border>
+
+        <!-- 下部: NDI設定、デバイス選択、情報表示、コントロールボタン -->
+        <Grid Grid.Row="2" Margin="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- NDI名設定 -->
+            <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0">
+                <Label Padding="0" VerticalAlignment="Center" FontSize="12">NDI:</Label>
+                <TextBox Name="textBoxNDIName" Width="140" Height="28" Text="HDMI Capture" Padding="5" Margin="5,0,0,0" VerticalAlignment="Center"/>
+            </StackPanel>
+
+            <!-- デバイス選択 -->
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <Label Padding="0" VerticalAlignment="Center" FontSize="12">デバイス:</Label>
+                <ComboBox Name="comboBoxDevices" Width="180" Height="28" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                <Button Name="buttonRefreshDevices" Content="更新" Width="70" Height="28" Click="ButtonRefreshDevices_Click" Margin="5,0,0,0" VerticalAlignment="Center" Padding="0"/>
+                <TextBlock Name="labelDeviceInfo" Text="" FontSize="10" Foreground="#666666" Margin="8,0,0,0" VerticalAlignment="Center"/>
+            </StackPanel>
+
+            <!-- 情報表示 -->
+            <Grid Grid.Column="2" Margin="12,0">
+                <TextBlock Name="labelInfo" Text="フレームレート: 0 FPS" FontSize="11" HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                <TextBlock Name="labelCaptureInfo" Text="キャプチャー: 待機中" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+            </Grid>
+
+            <!-- コントロールボタン -->
+            <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                <Button Name="buttonStart" Content="開始" Width="80" Height="35" Click="ButtonStart_Click" Background="#4CAF50" Foreground="White" FontSize="13" Margin="5,0,0,0"/>
+                <Button Name="buttonStop" Content="停止" Width="80" Height="35" Click="ButtonStop_Click" Background="#F44336" Foreground="White" FontSize="13" IsEnabled="False" Margin="5,0,0,0"/>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>
