@@ -45,7 +45,11 @@ namespace HDMICapture.Core
 
                     _isRunning = true;
                     _cancellationTokenSource = new CancellationTokenSource();
-                    _captureTask = CaptureFramesAsync(_cancellationTokenSource.Token);
+                    // Task.Run で明示的にバックグラウンドスレッドへ切り離す。
+                    // これをしないと await の継続処理がUIスレッドのSynchronizationContextに
+                    // 捕捉され、capture.Read()のブロッキング呼び出しがUIスレッドで走ってしまう。
+                    var token = _cancellationTokenSource.Token;
+                    _captureTask = Task.Run(() => CaptureFramesAsync(token), token);
                 }
             }
             catch (Exception ex)
@@ -149,9 +153,9 @@ namespace HDMICapture.Core
 
                         FrameReceived?.Invoke(this, args);
 
-                        // Delay based on frame rate (60fps = ~16.67ms per frame)
-                        int delayMs = Math.Max(1, (int)(1000.0 / FrameRate / 2));
-                        await Task.Delay(delayMs, cancellationToken);
+                        // capture.Read() 自体がデバイスのフレームレートでブロックされるため、
+                        // 追加の待機は入れない（キャンセル確認のためのみ最小限yield）
+                        await Task.Yield();
                     }
                 }
             }

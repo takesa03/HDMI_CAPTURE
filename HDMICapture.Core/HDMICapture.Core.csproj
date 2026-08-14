@@ -12,6 +12,7 @@
     <!-- Windows Media Capture for video input -->
     <PackageReference Include="OpenCvSharp4" Version="4.11.0" />
     <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.11.0" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 
   <ItemGroup>

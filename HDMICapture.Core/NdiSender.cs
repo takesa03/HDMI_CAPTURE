@@ -14,10 +14,15 @@ namespace HDMICapture.Core
         private readonly object _lock = new();
 
         public string SourceName { get; set; } = "HDMI Capture";
-        public bool IsInitialized { get; private set; }
+        public bool IsVideoInitialized { get; private set; }
+        public bool IsAudioInitialized { get; private set; }
         public int Width { get; private set; }
         public int Height { get; private set; }
         public double FrameRate { get; private set; }
+
+        private double _frameRateMultiplier = 1.0;
+        private const int AudioMaxSamplesPerChunk = 1700;
+        private int _audioChannels;
 
         public NdiSender(string sourceName, int width, int height, double frameRate, double frameRateMultiplier = 1.0)
         {
@@ -26,50 +31,69 @@ namespace HDMICapture.Core
             Height = height;
             FrameRate = frameRate;
 
-            // Initialization is deferred to SendVideoFrame to handle missing NDI SDK gracefully
+            // Initialization is deferred to Send*Frame to handle missing NDI SDK gracefully
             _frameRateMultiplier = frameRateMultiplier;
         }
 
-        private double _frameRateMultiplier = 1.0;
+        private void EnsureSender()
+        {
+            if (_sender != null) return;
+            string failoverName = $"{System.Net.Dns.GetHostName()} (Failover)";
+            _sender = new Sender(SourceName, true, false, null, failoverName);
+        }
 
-        private void Initialize(int width, int height, double frameRate, double frameRateMultiplier)
+        private void InitializeVideo(int width, int height, double frameRate, double frameRateMultiplier)
         {
             try
             {
                 lock (_lock)
                 {
-                    // Calculate numerator and denominator from frame rate
+                    EnsureSender();
+
                     int frameRateNum = (int)(frameRate * frameRateMultiplier * 1000);
                     int frameRateDen = 1000;
 
-                    // Create NDI sender
-                    string failoverName = $"{System.Net.Dns.GetHostName()} (Failover)";
-                    _sender = new Sender(SourceName, true, false, null, failoverName);
-
-                    // Create video frame
                     _videoFrame = new VideoFrame(width, height, (16.0f / 9.0f), frameRateNum, frameRateDen);
 
-                    // Create audio frame (48kHz, stereo)
-                    _audioFrame = new AudioFrame(1700, 48000, 2);
-
-                    IsInitialized = true;
+                    IsVideoInitialized = true;
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Warning: Failed to initialize NDI sender: {ex.Message}");
-                IsInitialized = false;
+                System.Diagnostics.Debug.WriteLine($"Warning: Failed to initialize NDI video sender: {ex.Message}");
+                IsVideoInitialized = false;
+            }
+        }
+
+        private void InitializeAudio(int sampleRate, int channels)
+        {
+            try
+            {
+                lock (_lock)
+                {
+                    EnsureSender();
+
+                    _audioFrame = new AudioFrame(AudioMaxSamplesPerChunk, sampleRate, channels);
+                    _audioChannels = channels;
+
+                    IsAudioInitialized = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Warning: Failed to initialize NDI audio sender: {ex.Message}");
+                IsAudioInitialized = false;
             }
         }
 
         public void SendVideoFrame(byte[] frameData, int width, int height)
         {
-            if (!IsInitialized)
-                Initialize(width, height, FrameRate, _frameRateMultiplier);
+            if (!IsVideoInitialized)
+                InitializeVideo(width, height, FrameRate, _frameRateMultiplier);
 
-            if (!IsInitialized || _videoFrame == null || _sender == null)
+            if (!IsVideoInitialized || _videoFrame == null || _sender == null)
             {
-                System.Diagnostics.Debug.WriteLine("Warning: NDI sender not available (SDK may not be installed)");
+                System.Diagnostics.Debug.WriteLine("Warning: NDI video sender not available (SDK may not be installed)");
                 return;
             }
 
@@ -100,12 +124,12 @@ namespace HDMICapture.Core
 
         public void SendVideoFrameWithBitmap(Bitmap bitmap)
         {
-            if (!IsInitialized)
-                Initialize(bitmap.Width, bitmap.Height, FrameRate, _frameRateMultiplier);
+            if (!IsVideoInitialized)
+                InitializeVideo(bitmap.Width, bitmap.Height, FrameRate, _frameRateMultiplier);
 
-            if (!IsInitialized || _videoFrame == null || _sender == null)
+            if (!IsVideoInitialized || _videoFrame == null || _sender == null)
             {
-                System.Diagnostics.Debug.WriteLine("Warning: NDI sender not available (SDK may not be installed)");
+                System.Diagnostics.Debug.WriteLine("Warning: NDI video sender not available (SDK may not be installed)");
                 return;
             }
 
@@ -146,30 +170,58 @@ namespace HDMICapture.Core
             }
         }
 
+        // audioData はインターリーブ形式 (LRLRLR...)。NDIはプレーナー形式を要求するため内部で変換する。
+        // 事前確保したバッファ (AudioMaxSamplesPerChunk サンプル/チャンネル分) を超える場合は分割して送信する。
         public void SendAudioFrame(float[] audioData, int sampleRate, int channels)
         {
-            if (!IsInitialized || _audioFrame == null || _sender == null)
-                throw new InvalidOperationException("NDI sender not initialized");
+            if (channels <= 0 || audioData.Length == 0) return;
+
+            if (!IsAudioInitialized || _audioChannels != channels)
+                InitializeAudio(sampleRate, channels);
+
+            if (!IsAudioInitialized || _audioFrame == null || _sender == null)
+            {
+                System.Diagnostics.Debug.WriteLine("Warning: NDI audio sender not available (SDK may not be installed)");
+                return;
+            }
+
+            int totalSamples = audioData.Length / channels;
+            int offset = 0;
 
             try
             {
-                lock (_lock)
+                while (offset < totalSamples)
                 {
-                    _audioFrame.SampleRate = sampleRate;
-                    _audioFrame.NumChannels = channels;
-                    _audioFrame.NumSamples = audioData.Length / channels;
-                    _audioFrame.ChannelStride = _audioFrame.NumSamples * sizeof(float);
+                    int chunkSamples = Math.Min(AudioMaxSamplesPerChunk, totalSamples - offset);
 
-                    // Copy audio data
-                    Marshal.Copy(audioData, 0, _audioFrame.AudioBuffer, audioData.Length);
+                    lock (_lock)
+                    {
+                        // インターリーブ -> プレーナーへ変換
+                        float[] planar = new float[chunkSamples * channels];
+                        for (int ch = 0; ch < channels; ch++)
+                        {
+                            for (int i = 0; i < chunkSamples; i++)
+                            {
+                                planar[ch * chunkSamples + i] = audioData[(offset + i) * channels + ch];
+                            }
+                        }
 
-                    // Send the frame
-                    _sender.Send(_audioFrame);
+                        _audioFrame.SampleRate = sampleRate;
+                        _audioFrame.NumChannels = channels;
+                        _audioFrame.NumSamples = chunkSamples;
+                        _audioFrame.ChannelStride = chunkSamples * sizeof(float);
+
+                        Marshal.Copy(planar, 0, _audioFrame.AudioBuffer, planar.Length);
+
+                        _sender.Send(_audioFrame);
+                    }
+
+                    offset += chunkSamples;
                 }
             }
             catch (Exception ex)
             {
-                throw new InvalidOperationException($"Failed to send audio frame: {ex.Message}", ex);
+                System.Diagnostics.Debug.WriteLine($"Warning: Failed to send audio frame: {ex.Message}");
             }
         }
 
@@ -222,7 +274,8 @@ namespace HDMICapture.Core
                 _videoFrame = null;
                 _audioFrame = null;
                 _sender = null;
-                IsInitialized = false;
+                IsVideoInitialized = false;
+                IsAudioInitialized = false;
             }
 
             _disposed = true;

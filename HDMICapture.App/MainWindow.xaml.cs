@@ -3,7 +3,6 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using System.Drawing;
 using HDMICapture.Core;
 
 namespace HDMICapture.App
@@ -12,8 +11,10 @@ namespace HDMICapture.App
     {
         private IVideoSource? _videoSource;
         private NdiSender? _ndiSender;
+        private AudioCapture? _audioCapture;
         private int _frameCount;
         private DateTime _lastFpsUpdate;
+        private WriteableBitmap? _previewBitmap;
 
         public MainWindow()
         {
@@ -99,6 +100,19 @@ namespace HDMICapture.App
                 _ndiSender = new NdiSender(ndiName, width, height, fps);
                 labelCaptureInfo.Text = $"キャプチャー: {width}x{height} @ {fps:F1} fps";
 
+                // 選択した映像デバイスと同じ機器のオーディオインターフェースを探して音声キャプチャを開始
+                try
+                {
+                    _audioCapture = new AudioCapture();
+                    _audioCapture.AudioFrameReceived += AudioCapture_AudioFrameReceived;
+                    _audioCapture.ErrorOccurred += AudioCapture_ErrorOccurred;
+                    _audioCapture.Start(deviceName);
+                }
+                catch (Exception audioEx)
+                {
+                    System.Diagnostics.Debug.WriteLine($"音声キャプチャの開始に失敗: {audioEx.Message}");
+                }
+
                 labelStatus.Text = "● 動作中";
                 statusBorder.Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(76, 175, 80)); // Green
                 buttonStart.IsEnabled = false;
@@ -143,15 +157,29 @@ namespace HDMICapture.App
 
         private void VideoSource_FrameReceived(object? sender, VideoFrameEventArgs e)
         {
+            var src = sender as IVideoSource;
+
+            // Stop() 呼び出し直後に、停止直前に取得済みだった最後のフレームが
+            // 非同期で届くことがある。停止済みならUI更新・NDI送信は行わない。
+            if (src != null && !src.IsRunning)
+                return;
+
             _frameCount++;
 
             // Update FPS display
             var now = DateTime.Now;
             if ((now - _lastFpsUpdate).TotalSeconds >= 1.0)
             {
-                Dispatcher.Invoke(() =>
+                // BeginInvokeは非同期実行のため、_frameCountをそのまま参照すると
+                // ラムダが実際に実行される頃には下でリセットされた後の値になってしまう。
+                // 値をローカル変数にスナップショットしてクロージャに渡す。
+                int fpsSnapshot = _frameCount;
+
+                // Dispatcher.Invoke(同期)は使わない: Stop()側のTask.WaitがUIスレッドを
+                // ブロックしている間にここで待ち合わせるとデッドロックする。
+                Dispatcher.BeginInvoke(() =>
                 {
-                    labelInfo.Text = $"フレームレート: {_frameCount} FPS";
+                    labelInfo.Text = $"フレームレート: {fpsSnapshot} FPS";
                 });
                 _frameCount = 0;
                 _lastFpsUpdate = now;
@@ -166,7 +194,7 @@ namespace HDMICapture.App
                 }
                 catch (Exception ex)
                 {
-                    Dispatcher.Invoke(() =>
+                    Dispatcher.BeginInvoke(() =>
                     {
                         labelInfo.Text = $"NDI送信エラー: {ex.Message}";
                     });
@@ -178,8 +206,11 @@ namespace HDMICapture.App
             {
                 if (e.Width > 0 && e.Height > 0 && e.FrameData.Length > 0)
                 {
-                    Dispatcher.Invoke(() =>
+                    Dispatcher.BeginInvoke(() =>
                     {
+                        // キューに積まれた時点では動作中でも、実行時には既に停止済み
+                        // (Stop側の黒画面クリアより後)の可能性があるため再チェックする。
+                        if (src != null && !src.IsRunning) return;
                         DisplayFrame(e.FrameData, e.Width, e.Height);
                     });
                 }
@@ -195,38 +226,50 @@ namespace HDMICapture.App
             });
         }
 
+        private void AudioCapture_AudioFrameReceived(object? sender, AudioFrameEventArgs e)
+        {
+            if (_ndiSender == null || e.Samples.Length == 0) return;
+
+            try
+            {
+                _ndiSender.SendAudioFrame(e.Samples, e.SampleRate, e.Channels);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"音声送信エラー: {ex.Message}");
+            }
+        }
+
+        private void AudioCapture_ErrorOccurred(object? sender, string error)
+        {
+            System.Diagnostics.Debug.WriteLine($"音声キャプチャエラー: {error}");
+        }
+
         private void DisplayFrame(byte[] frameData, int width, int height)
         {
             try
             {
-                // frameData is in BGRA format from OpenCV (B G R A)
-                // Create Bitmap directly with BGRA data
-                using (var bitmap = new Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+                // BMPエンコード等の変換を挟まず、BGRAデータを直接WriteableBitmapへ書き込む
+                if (_previewBitmap == null || _previewBitmap.PixelWidth != width || _previewBitmap.PixelHeight != height)
                 {
-                    var bmpData = bitmap.LockBits(
-                        new Rectangle(0, 0, width, height),
-                        System.Drawing.Imaging.ImageLockMode.WriteOnly,
-                        System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                    _previewBitmap = new WriteableBitmap(width, height, 96, 96, PixelFormats.Bgra32, null);
+                }
 
-                    // WPF Format32bppArgb actually stores BGRA in memory, which matches OpenCV BGRA
-                    System.Runtime.InteropServices.Marshal.Copy(frameData, 0, bmpData.Scan0, frameData.Length);
-                    bitmap.UnlockBits(bmpData);
+                // Stop時に imagePreview.Source がクリアされるため、毎回参照を確認して再設定する
+                if (!ReferenceEquals(imagePreview.Source, _previewBitmap))
+                {
+                    imagePreview.Source = _previewBitmap;
+                }
 
-                    // Convert Bitmap to BitmapImage for WPF
-                    using (var memoryStream = new System.IO.MemoryStream())
-                    {
-                        bitmap.Save(memoryStream, System.Drawing.Imaging.ImageFormat.Bmp);
-                        memoryStream.Seek(0, System.IO.SeekOrigin.Begin);
-
-                        var bitmapImage = new BitmapImage();
-                        bitmapImage.BeginInit();
-                        bitmapImage.StreamSource = memoryStream;
-                        bitmapImage.CacheOption = BitmapCacheOption.OnLoad;
-                        bitmapImage.EndInit();
-                        bitmapImage.Freeze();
-
-                        imagePreview.Source = bitmapImage;
-                    }
+                _previewBitmap.Lock();
+                try
+                {
+                    System.Runtime.InteropServices.Marshal.Copy(frameData, 0, _previewBitmap.BackBuffer, frameData.Length);
+                    _previewBitmap.AddDirtyRect(new Int32Rect(0, 0, width, height));
+                }
+                finally
+                {
+                    _previewBitmap.Unlock();
                 }
             }
             catch (Exception ex)
@@ -238,8 +281,10 @@ namespace HDMICapture.App
         private void Cleanup()
         {
             _videoSource?.Dispose();
+            _audioCapture?.Dispose();
             _ndiSender?.Dispose();
             _videoSource = null;
+            _audioCapture = null;
             _ndiSender = null;
         }
 
