@@ -18,37 +18,49 @@ namespace HDMICapture.App
         public MainWindow()
         {
             InitializeComponent();
-            RefreshDevices();
+            _ = RefreshDevicesAsync();
         }
 
-        private void ButtonRefreshDevices_Click(object sender, RoutedEventArgs e)
+        private async void ButtonRefreshDevices_Click(object sender, RoutedEventArgs e)
         {
-            RefreshDevices();
+            await RefreshDevicesAsync();
         }
 
-        private void RefreshDevices()
+        private async System.Threading.Tasks.Task RefreshDevicesAsync()
         {
             comboBoxDevices.Items.Clear();
+            comboBoxDevices.IsEnabled = false;
+            buttonRefreshDevices.IsEnabled = false;
 
             try
             {
-                // Add default camera and numbered device indices
-                comboBoxDevices.Items.Add("カメラ 0 (デフォルト)");
-                for (int i = 1; i < 5; i++)
+                var devices = await OpenCvVideoCapture.EnumerateAvailableDevicesAsync();
+
+                if (devices.Count == 0)
                 {
-                    comboBoxDevices.Items.Add($"カメラ {i}");
+                    comboBoxDevices.Items.Add("(デバイスなし)");
+                    comboBoxDevices.SelectedIndex = 0;
                 }
+                else
+                {
+                    foreach (var device in devices)
+                    {
+                        comboBoxDevices.Items.Add(device);
+                    }
 
-                comboBoxDevices.SelectedIndex = 0;
-                comboBoxDevices.IsEnabled = true;
-
-                labelDeviceInfo.Text = "別のデバイスを試す場合は番号を変更してください";
+                    comboBoxDevices.SelectedIndex = 0;
+                    comboBoxDevices.IsEnabled = true;
+                }
             }
             catch (Exception ex)
             {
-                labelDeviceInfo.Text = $"エラー: {ex.Message}";
                 comboBoxDevices.Items.Add("(エラー)");
                 comboBoxDevices.SelectedIndex = 0;
+                System.Diagnostics.Debug.WriteLine($"Device enumeration error: {ex}");
+            }
+            finally
+            {
+                buttonRefreshDevices.IsEnabled = true;
             }
         }
 

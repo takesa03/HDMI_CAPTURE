@@ -46,7 +46,6 @@
                 <Label Padding="0" VerticalAlignment="Center" FontSize="12">デバイス:</Label>
                 <ComboBox Name="comboBoxDevices" Width="180" Height="28" Margin="5,0,0,0" VerticalAlignment="Center"/>
                 <Button Name="buttonRefreshDevices" Content="更新" Width="70" Height="28" Click="ButtonRefreshDevices_Click" Margin="5,0,0,0" VerticalAlignment="Center" Padding="0"/>
-                <TextBlock Name="labelDeviceInfo" Text="" FontSize="10" Foreground="#666666" Margin="8,0,0,0" VerticalAlignment="Center"/>
             </StackPanel>
 
             <!-- 情報表示 -->

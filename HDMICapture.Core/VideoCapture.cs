@@ -1,5 +1,6 @@
 using OpenCvSharp;
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -88,9 +89,8 @@ namespace HDMICapture.Core
         {
             try
             {
-                // Try to open capture device (0 = default camera, try 1, 2, etc. for other devices)
                 int deviceIndex = TryParseDeviceIndex(DeviceName);
-                _capture = new OpenCvSharp.VideoCapture(deviceIndex, VideoCaptureAPIs.DSHOW);
+                _capture = new OpenCvSharp.VideoCapture(deviceIndex, VideoCaptureAPIs.MSMF);
 
                 if (!_capture.IsOpened())
                     throw new InvalidOperationException($"Failed to open capture device {deviceIndex}");
@@ -163,15 +163,90 @@ namespace HDMICapture.Core
             }
         }
 
+
+        public struct DeviceInfo
+        {
+            public int Index;
+            public int Width;
+            public int Height;
+            public double Fps;
+        }
+
+        public static Dictionary<string, DeviceInfo> DeviceCache = new();
+
         private static int TryParseDeviceIndex(string deviceName)
         {
-            // If device name is a number, use it as device index
-            if (int.TryParse(deviceName, out int index))
-                return index;
+            if (DeviceCache.TryGetValue(deviceName, out var info))
+                return info.Index;
 
-            // Otherwise, try to find matching device
-            // For now, default to 0 (will need more sophisticated device enumeration)
+            if (int.TryParse(deviceName, out int numIndex))
+                return numIndex;
+
             return 0;
+        }
+
+        // WinRT DeviceInformation の列挙順序は OpenCV の MSMF バックエンドの
+        // デバイスインデックス順序と一致するため、名前解決にはこちらを使う。
+        // (DSHOW バックエンドの順序とは一致しないことを確認済み)
+        public static async Task<List<string>> EnumerateAvailableDevicesAsync()
+        {
+            var devices = new List<string>();
+            DeviceCache.Clear();
+
+            System.Diagnostics.Debug.WriteLine("\n========== Device Enumeration Start (WinRT + MSMF) ==========");
+
+            var winrtDevices = await Windows.Devices.Enumeration.DeviceInformation.FindAllAsync(
+                Windows.Devices.Enumeration.DeviceClass.VideoCapture);
+
+            for (int i = 0; i < winrtDevices.Count; i++)
+            {
+                string deviceName = winrtDevices[i].Name;
+                System.Diagnostics.Debug.WriteLine($"[WinRT {i}] Name=\"{deviceName}\" Id={winrtDevices[i].Id}");
+
+                try
+                {
+                    using (var capture = new OpenCvSharp.VideoCapture(i, VideoCaptureAPIs.MSMF))
+                    {
+                        if (capture.IsOpened())
+                        {
+                            using (var frame = new Mat())
+                            {
+                                if (capture.Read(frame) && !frame.Empty())
+                                {
+                                    double fps = capture.Get(VideoCaptureProperties.Fps);
+                                    if (fps <= 0) fps = 30.0;
+
+                                    devices.Add(deviceName);
+                                    DeviceCache[deviceName] = new DeviceInfo
+                                    {
+                                        Index = i,
+                                        Width = frame.Width,
+                                        Height = frame.Height,
+                                        Fps = fps
+                                    };
+
+                                    System.Diagnostics.Debug.WriteLine($"[MSMF {i}] ✓ {deviceName}: {frame.Width}x{frame.Height} @ {fps:F2}fps");
+                                }
+                                else
+                                {
+                                    System.Diagnostics.Debug.WriteLine($"[MSMF {i}] ✗ Cannot read frame for \"{deviceName}\"");
+                                }
+                            }
+                        }
+                        else
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[MSMF {i}] ✗ Cannot open device for \"{deviceName}\"");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[MSMF {i}] ✗ Exception for \"{deviceName}\": {ex.Message}");
+                }
+            }
+
+            System.Diagnostics.Debug.WriteLine($"========== Found {devices.Count} device(s) ==========\n");
+            return devices;
         }
 
         public void Dispose()
