@@ -100,17 +100,20 @@ namespace HDMICapture.App
                 _ndiSender = new NdiSender(ndiName, width, height, fps);
                 labelCaptureInfo.Text = $"キャプチャー: {width}x{height} @ {fps:F1} fps";
 
-                // 選択した映像デバイスと同じ機器のオーディオインターフェースを探して音声キャプチャを開始
-                try
+                // チェックボックスがONの場合のみ、選択した映像デバイスと同じ機器のオーディオインターフェースを探して音声キャプチャを開始
+                if (checkBoxAudioEnabled.IsChecked == true)
                 {
-                    _audioCapture = new AudioCapture();
-                    _audioCapture.AudioFrameReceived += AudioCapture_AudioFrameReceived;
-                    _audioCapture.ErrorOccurred += AudioCapture_ErrorOccurred;
-                    _audioCapture.Start(deviceName);
-                }
-                catch (Exception audioEx)
-                {
-                    System.Diagnostics.Debug.WriteLine($"音声キャプチャの開始に失敗: {audioEx.Message}");
+                    try
+                    {
+                        _audioCapture = new AudioCapture();
+                        _audioCapture.AudioFrameReceived += AudioCapture_AudioFrameReceived;
+                        _audioCapture.ErrorOccurred += AudioCapture_ErrorOccurred;
+                        _audioCapture.Start(deviceName);
+                    }
+                    catch (Exception audioEx)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"音声キャプチャの開始に失敗: {audioEx.Message}");
+                    }
                 }
 
                 labelStatus.Text = "● 動作中";
@@ -118,6 +121,7 @@ namespace HDMICapture.App
                 buttonStart.IsEnabled = false;
                 buttonStop.IsEnabled = true;
                 comboBoxDevices.IsEnabled = false;
+                checkBoxAudioEnabled.IsEnabled = false;
                 textBoxNDIName.IsReadOnly = true;
 
                 _frameCount = 0;
@@ -147,6 +151,7 @@ namespace HDMICapture.App
                 buttonStart.IsEnabled = true;
                 buttonStop.IsEnabled = false;
                 comboBoxDevices.IsEnabled = true;
+                checkBoxAudioEnabled.IsEnabled = true;
                 textBoxNDIName.IsReadOnly = false;
             }
             catch (Exception ex)
