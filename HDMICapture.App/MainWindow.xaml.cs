@@ -54,6 +54,7 @@ namespace HDMICapture.App
                     textBoxNDIName.Text = _appSettings.NdiName;
 
                 checkBoxAudioEnabled.IsChecked = _appSettings.AudioEnabled;
+                checkBoxMeteorDetection.IsChecked = _appSettings.MeteorDetectionEnabled;
 
                 int exposureIndex = Math.Clamp(_appSettings.ExposureSeconds - 1, 0, 4);
                 comboBoxExposure.SelectedIndex = exposureIndex;
@@ -120,6 +121,13 @@ namespace HDMICapture.App
             AppConfig.Save(_appSettings);
         }
 
+        private void CheckBoxMeteorDetection_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_isRestoringSettings) return;
+            _appSettings.MeteorDetectionEnabled = checkBoxMeteorDetection.IsChecked == true;
+            AppConfig.Save(_appSettings);
+        }
+
         private void ComboBoxExposure_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (_isRestoringSettings) return;
@@ -156,6 +164,8 @@ namespace HDMICapture.App
             labelOverlayMarginY.Text = $"{marginY}px";
 
             _overlayRenderer.UpdateStyle(fontScale, marginX, marginY, fontFace);
+            _meteorController.TimecodeFontFace = fontFace;
+            _meteorController.TimecodeFontScaleMultiplier = fontScale;
 
             if (_isRestoringSettings) return;
             _appSettings.OverlayFontScale = fontScale;

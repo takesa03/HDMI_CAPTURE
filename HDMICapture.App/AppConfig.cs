@@ -15,6 +15,7 @@ namespace HDMICapture.App
         public int OverlayMarginX { get; set; } = 12;
         public int OverlayMarginY { get; set; } = 12;
         public string OverlayFontFace { get; set; } = "HersheySimplex";
+        public bool MeteorDetectionEnabled { get; set; } = true;
     }
 
     public static class AppConfig

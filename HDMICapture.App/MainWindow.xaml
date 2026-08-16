@@ -131,7 +131,8 @@
                 </Grid.ColumnDefinitions>
 
                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,16,0">
-                    <CheckBox Name="checkBoxMeteorDetection" Content="流星検出" VerticalAlignment="Center" FontSize="12"/>
+                    <CheckBox Name="checkBoxMeteorDetection" Content="流星検出" VerticalAlignment="Center" FontSize="12"
+                              Checked="CheckBoxMeteorDetection_Changed" Unchecked="CheckBoxMeteorDetection_Changed"/>
                     <Label Padding="0" VerticalAlignment="Center" FontSize="12" Margin="10,0,0,0">露出:</Label>
                     <ComboBox Name="comboBoxExposure" Width="60" Height="24" Margin="5,0,0,0" VerticalAlignment="Center" SelectedIndex="3" SelectionChanged="ComboBoxExposure_SelectionChanged">
                         <ComboBoxItem Content="1秒"/>
