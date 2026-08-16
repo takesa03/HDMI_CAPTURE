@@ -9,9 +9,7 @@ namespace HDMICapture.Core
     public class MeteorDetectedEventArgs : EventArgs
     {
         public int Count { get; set; }
-        public string ImagePath { get; set; } = string.Empty;
-        public string DiffImagePath { get; set; } = string.Empty;
-        public string MoviePath { get; set; } = string.Empty;
+        public MeteorDetectionRecord Record { get; set; } = new();
     }
 
     // ライブキャプチャのBGRAフレームを受け取り、露出時間分バッファリングして
@@ -20,10 +18,15 @@ namespace HDMICapture.Core
     // ブロックしないよう Task.Run でバックグラウンド実行する。
     public class MeteorDetectionController : IDisposable
     {
+        private class FrameWindow
+        {
+            public readonly List<Mat> Frames = new();
+            public DateTime StartTime;
+        }
+
         private readonly MeteorDetector _detector = new();
         private readonly object _lock = new();
-        private List<Mat> _window = new();
-        private DateTime _windowStart;
+        private FrameWindow _window = new();
         private int _detectCount;
         private double _fps = 30;
         private bool _disposed;
@@ -51,8 +54,8 @@ namespace HDMICapture.Core
         {
             lock (_lock)
             {
-                foreach (var m in _window) m.Dispose();
-                _window.Clear();
+                foreach (var m in _window.Frames) m.Dispose();
+                _window = new FrameWindow();
             }
             _detectCount = 0;
         }
@@ -67,29 +70,30 @@ namespace HDMICapture.Core
             var bgr = new Mat();
             Cv2.CvtColor(bgra, bgr, ColorConversionCodes.BGRA2BGR);
 
-            List<Mat>? snapshot = null;
+            FrameWindow? snapshot = null;
 
             lock (_lock)
             {
-                if (_window.Count == 0) _windowStart = DateTime.Now;
-                _window.Add(bgr);
+                if (_window.Frames.Count == 0) _window.StartTime = DateTime.Now;
+                _window.Frames.Add(bgr);
 
-                if ((DateTime.Now - _windowStart).TotalSeconds >= Exposure)
+                if ((DateTime.Now - _window.StartTime).TotalSeconds >= Exposure)
                 {
                     snapshot = _window;
-                    _window = new List<Mat>();
+                    _window = new FrameWindow();
                 }
             }
 
             if (snapshot != null)
             {
-                var frames = snapshot;
-                Task.Run(() => ProcessWindow(frames));
+                var w = snapshot;
+                Task.Run(() => ProcessWindow(w));
             }
         }
 
-        private void ProcessWindow(List<Mat> images)
+        private void ProcessWindow(FrameWindow window)
         {
+            var images = window.Frames;
             try
             {
                 if (images.Count > 2)
@@ -106,8 +110,10 @@ namespace HDMICapture.Core
                         var now = DateTime.Now;
                         _detectCount++;
 
+                        // ファイル名・記録上の「検出日時」は処理完了時刻(now)ではなく
+                        // 露出(バッファリング)を開始した時刻を使う。
                         Directory.CreateDirectory(OutputDirectory);
-                        string timestamp = now.ToString("yyyyMMdd_HHmmss");
+                        string timestamp = window.StartTime.ToString("yyyyMMdd_HHmmss");
                         string jpgPath = Path.Combine(OutputDirectory, timestamp + ".jpg");
                         Cv2.ImWrite(jpgPath, composite);
 
@@ -117,12 +123,20 @@ namespace HDMICapture.Core
                         string mp4Path = Path.Combine(OutputDirectory, timestamp + "_movie.mp4");
                         SaveMovie(images, mp4Path);
 
+                        var record = new MeteorDetectionRecord
+                        {
+                            ExposureStartTime = window.StartTime,
+                            DetectedTime = now,
+                            PhotoPath = jpgPath,
+                            DiffPath = diffPath,
+                            MoviePath = mp4Path
+                        };
+                        MeteorDetectionListStore.Append(OutputDirectory, record);
+
                         MeteorDetected?.Invoke(this, new MeteorDetectedEventArgs
                         {
                             Count = _detectCount,
-                            ImagePath = jpgPath,
-                            DiffImagePath = diffPath,
-                            MoviePath = mp4Path
+                            Record = record
                         });
                     }
                 }

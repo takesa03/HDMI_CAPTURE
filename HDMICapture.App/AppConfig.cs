@@ -11,6 +11,10 @@ namespace HDMICapture.App
         public bool AudioEnabled { get; set; } = true;
         public int ExposureSeconds { get; set; } = 4;
         public string? MaskFilePath { get; set; }
+        public double OverlayFontScale { get; set; } = 1.0;
+        public int OverlayMarginX { get; set; } = 12;
+        public int OverlayMarginY { get; set; } = 12;
+        public string OverlayFontFace { get; set; } = "HersheySimplex";
     }
 
     public static class AppConfig

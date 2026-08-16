@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using HDMICapture.Core;
@@ -17,10 +20,16 @@ namespace HDMICapture.App
         private WriteableBitmap? _previewBitmap;
 
         private readonly MeteorDetectionController _meteorController = new();
+        private readonly OverlayRenderer _overlayRenderer = new();
         private bool _meteorDetectionActive;
         private double _captureFps = 30.0;
+        private int _captureHeight = 1080;
         private readonly AppSettings _appSettings = AppConfig.Load();
         private bool _isRestoringSettings;
+
+        private string? _reviewFolder;
+        private List<MeteorDetectionRecord> _reviewRecords = new();
+        private MeteorDetectionRecord? _reviewSelected;
 
         public MainWindow()
         {
@@ -48,6 +57,23 @@ namespace HDMICapture.App
 
                 int exposureIndex = Math.Clamp(_appSettings.ExposureSeconds - 1, 0, 4);
                 comboBoxExposure.SelectedIndex = exposureIndex;
+
+                sliderOverlayFontScale.Value = _appSettings.OverlayFontScale;
+                sliderOverlayMarginX.Value = _appSettings.OverlayMarginX;
+                sliderOverlayMarginY.Value = _appSettings.OverlayMarginY;
+
+                int fontIndex = 0;
+                for (int i = 0; i < comboBoxOverlayFont.Items.Count; i++)
+                {
+                    if (((ComboBoxItem)comboBoxOverlayFont.Items[i]).Tag as string == _appSettings.OverlayFontFace)
+                    {
+                        fontIndex = i;
+                        break;
+                    }
+                }
+                comboBoxOverlayFont.SelectedIndex = fontIndex;
+
+                ApplyOverlayStyle();
 
                 if (!string.IsNullOrWhiteSpace(_appSettings.MaskFilePath))
                 {
@@ -98,6 +124,44 @@ namespace HDMICapture.App
         {
             if (_isRestoringSettings) return;
             _appSettings.ExposureSeconds = comboBoxExposure.SelectedIndex + 1;
+            AppConfig.Save(_appSettings);
+        }
+
+        private void OverlayStyle_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            ApplyOverlayStyle();
+        }
+
+        private void OverlayFont_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            ApplyOverlayStyle();
+        }
+
+        private void ApplyOverlayStyle()
+        {
+            // XAML解析中(コントロールの初期値設定時)にも発火するため、
+            // 未生成のコントロールへのアクセスを避けるガードを入れる。
+            if (labelOverlayFontScale == null || labelOverlayMarginX == null || labelOverlayMarginY == null
+                || comboBoxOverlayFont == null || comboBoxOverlayFont.SelectedItem == null)
+                return;
+
+            double fontScale = sliderOverlayFontScale.Value;
+            int marginX = (int)sliderOverlayMarginX.Value;
+            int marginY = (int)sliderOverlayMarginY.Value;
+            string fontTag = (string)((ComboBoxItem)comboBoxOverlayFont.SelectedItem).Tag;
+            var fontFace = Enum.Parse<OpenCvSharp.HersheyFonts>(fontTag);
+
+            labelOverlayFontScale.Text = $"{fontScale:F1}x";
+            labelOverlayMarginX.Text = $"{marginX}px";
+            labelOverlayMarginY.Text = $"{marginY}px";
+
+            _overlayRenderer.UpdateStyle(fontScale, marginX, marginY, fontFace);
+
+            if (_isRestoringSettings) return;
+            _appSettings.OverlayFontScale = fontScale;
+            _appSettings.OverlayMarginX = marginX;
+            _appSettings.OverlayMarginY = marginY;
+            _appSettings.OverlayFontFace = fontTag;
             AppConfig.Save(_appSettings);
         }
 
@@ -174,6 +238,7 @@ namespace HDMICapture.App
                 _ndiSender = new NdiSender(ndiName, width, height, fps);
                 labelCaptureInfo.Text = $"キャプチャー: {width}x{height} @ {fps:F1} fps";
                 _captureFps = fps;
+                _captureHeight = height;
 
                 // 流星検出はON/OFFチェックボックスで制御。開始時に一度だけ状態を確定する
                 // (VideoSource_FrameReceivedはキャプチャスレッドから呼ばれるため、
@@ -186,6 +251,11 @@ namespace HDMICapture.App
                         ? "meteor_output" : textBoxMeteorOutputDir.Text;
                     _meteorController.Reset();
                     labelMeteorCount.Text = "検出: 0件";
+                    _overlayRenderer.UpdateText("Start detection", height);
+                }
+                else
+                {
+                    _overlayRenderer.Clear();
                 }
 
                 // チェックボックスがONの場合のみ、選択した映像デバイスと同じ機器のオーディオインターフェースを探して音声キャプチャを開始
@@ -250,6 +320,7 @@ namespace HDMICapture.App
 
                 _meteorDetectionActive = false;
                 _meteorController.Reset();
+                _overlayRenderer.Clear();
             }
             catch (Exception ex)
             {
@@ -287,6 +358,26 @@ namespace HDMICapture.App
                 _lastFpsUpdate = now;
             }
 
+            // 流星検出(ONの場合のみ)。重い処理はコントローラ内でTask.Run実行するため、
+            // ここではフレームのコピー渡しのみで、キャプチャループをブロックしない。
+            // オーバーレイ焼き込みより前に行う: 検出アルゴリズムには
+            // オーバーレイの写っていない生のフレームを渡すため。
+            if (_meteorDetectionActive && e.FrameData.Length > 0)
+            {
+                try
+                {
+                    _meteorController.AddFrame(e.FrameData, e.Width, e.Height, _captureFps);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"流星検出エラー: {ex.Message}");
+                }
+
+                // 検出件数・時刻のオーバーレイをフレームバッファへ直接焼き込む。
+                // NDI送信・プレビュー表示の両方が同じバッファを参照するため、両方に反映される。
+                _overlayRenderer.ApplyToFrame(e.FrameData, e.Width, e.Height);
+            }
+
             // Send frame via NDI if initialized
             if (_ndiSender != null && e.FrameData.Length > 0)
             {
@@ -300,20 +391,6 @@ namespace HDMICapture.App
                     {
                         labelInfo.Text = $"NDI送信エラー: {ex.Message}";
                     });
-                }
-            }
-
-            // 流星検出(ONの場合のみ)。重い処理はコントローラ内でTask.Run実行するため、
-            // ここではフレームのコピー渡しのみで、キャプチャループをブロックしない。
-            if (_meteorDetectionActive && e.FrameData.Length > 0)
-            {
-                try
-                {
-                    _meteorController.AddFrame(e.FrameData, e.Width, e.Height, _captureFps);
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"流星検出エラー: {ex.Message}");
                 }
             }
 
@@ -347,8 +424,22 @@ namespace HDMICapture.App
             Dispatcher.BeginInvoke(() =>
             {
                 labelMeteorCount.Text = $"検出: {e.Count}件";
+
+                // レビューパネルが同じフォルダを開いたまま表示中なら、
+                // プレビューと並行して一覧にも新しい検出を反映する。
+                if (borderReviewPanel.Visibility == Visibility.Visible &&
+                    _reviewFolder != null &&
+                    string.Equals(_reviewFolder, _meteorController.OutputDirectory, StringComparison.OrdinalIgnoreCase))
+                {
+                    LoadReviewFolder(_reviewFolder);
+                }
             });
-            System.Diagnostics.Debug.WriteLine($"流星検出: {e.ImagePath} / {e.DiffImagePath} / {e.MoviePath}");
+
+            _overlayRenderer.UpdateText(
+                $"Last detected:  {e.Record.ExposureStartTime:yyyy/MM/dd HH:mm:ss}  No.{e.Count}",
+                _captureHeight);
+
+            System.Diagnostics.Debug.WriteLine($"流星検出: {e.Record.PhotoPath} / {e.Record.DiffPath} / {e.Record.MoviePath}");
         }
 
         private void MeteorController_ErrorOccurred(object? sender, string error)
@@ -378,6 +469,175 @@ namespace HDMICapture.App
                 {
                     MessageBox.Show($"マスク画像の読み込みに失敗しました:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
+            }
+        }
+
+        private void ButtonMeteorReview_Click(object sender, RoutedEventArgs e)
+        {
+            if (borderReviewPanel.Visibility == Visibility.Visible)
+            {
+                borderReviewPanel.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            string folder = string.IsNullOrWhiteSpace(textBoxMeteorOutputDir.Text)
+                ? "meteor_output" : textBoxMeteorOutputDir.Text;
+
+            borderReviewPanel.Visibility = Visibility.Visible;
+            LoadReviewFolder(folder);
+        }
+
+        private void ButtonReviewClose_Click(object sender, RoutedEventArgs e)
+        {
+            borderReviewPanel.Visibility = Visibility.Collapsed;
+        }
+
+        private void ButtonReviewSelectFolder_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new Microsoft.Win32.OpenFolderDialog { Title = "検出リストのあるフォルダを選択" };
+            if (dlg.ShowDialog() == true)
+                LoadReviewFolder(dlg.FolderName);
+        }
+
+        private void ButtonReviewRefresh_Click(object sender, RoutedEventArgs e)
+        {
+            if (_reviewFolder != null) LoadReviewFolder(_reviewFolder);
+        }
+
+        private void LoadReviewFolder(string folder)
+        {
+            _reviewFolder = folder;
+            labelReviewFolder.Text = folder;
+
+            // 検出日時 = 露出開始時刻(処理完了時刻ではない)を基準に、昇順・No.1からの連番で表示する。
+            // 番号はリスト内の位置から都度算出するため、削除後の再読み込みで自動的に振り直される。
+            _reviewRecords = MeteorDetectionListStore.Load(folder)
+                .OrderBy(r => r.ExposureStartTime)
+                .ToList();
+
+            listBoxDetections.ItemsSource = _reviewRecords
+                .Select((r, i) => $"No.{i + 1}  {r.ExposureStartTime:yyyy/MM/dd HH:mm:ss}")
+                .ToList();
+
+            _reviewSelected = null;
+            StopMovie();
+            UpdateReviewView();
+        }
+
+        private void ListBoxDetections_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            int idx = listBoxDetections.SelectedIndex;
+            _reviewSelected = (idx >= 0 && idx < _reviewRecords.Count) ? _reviewRecords[idx] : null;
+            UpdateReviewView();
+        }
+
+        // 選択中と同じ項目を再クリックした場合はSelectionChangedが発火しないため、
+        // 明示的に再生し直す(動画再生を最初からやり直したい場合の入口)。
+        private void ListBoxDetections_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (e.OriginalSource is DependencyObject src)
+            {
+                var item = ItemsControl.ContainerFromElement(listBoxDetections, src) as ListBoxItem;
+                if (item != null && item.IsSelected)
+                    UpdateReviewView();
+            }
+        }
+
+        private void ViewMode_Changed(object sender, RoutedEventArgs e)
+        {
+            UpdateReviewView();
+        }
+
+        private void UpdateReviewView()
+        {
+            // XAML解析中、RadioButtonのIsChecked="True"の適用によってCheckedイベント
+            // (ViewMode_Changed)がInitializeComponentの途中で発火することがある。
+            // その時点ではまだ後方で宣言されているimageReview等が未生成のためガードする。
+            if (imageReview == null || mediaReview == null) return;
+
+            imageReview.Source = null;
+            StopMovie();
+
+            if (_reviewSelected == null) return;
+
+            if (radioViewMovie.IsChecked == true)
+            {
+                imageReview.Visibility = Visibility.Collapsed;
+                mediaReview.Visibility = Visibility.Visible;
+
+                if (System.IO.File.Exists(_reviewSelected.MoviePath))
+                {
+                    try
+                    {
+                        mediaReview.Source = new Uri(_reviewSelected.MoviePath, UriKind.Absolute);
+                        mediaReview.Play();
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"動画読み込みエラー: {ex.Message}");
+                    }
+                }
+            }
+            else
+            {
+                mediaReview.Visibility = Visibility.Collapsed;
+                imageReview.Visibility = Visibility.Visible;
+
+                string path = radioViewDiff.IsChecked == true ? _reviewSelected.DiffPath : _reviewSelected.PhotoPath;
+                if (System.IO.File.Exists(path))
+                {
+                    var bmp = new BitmapImage();
+                    bmp.BeginInit();
+                    bmp.CacheOption = BitmapCacheOption.OnLoad;
+                    bmp.UriSource = new Uri(path, UriKind.Absolute);
+                    bmp.EndInit();
+                    bmp.Freeze();
+                    imageReview.Source = bmp;
+                }
+            }
+        }
+
+        private void MediaReview_MediaOpened(object sender, RoutedEventArgs e)
+        {
+            System.Diagnostics.Debug.WriteLine("動画を開きました");
+        }
+
+        // このマシンではメディア系コンポーネントで問題が起きたことがあるため、
+        // 再生失敗時はアプリを巻き込まずエラーメッセージのみ表示する。
+        private void MediaReview_MediaFailed(object sender, ExceptionRoutedEventArgs e)
+        {
+            System.Diagnostics.Debug.WriteLine($"動画再生エラー: {e.ErrorException?.Message}");
+            MessageBox.Show($"動画の再生に失敗しました:\n{e.ErrorException?.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+
+        private void StopMovie()
+        {
+            if (mediaReview == null) return;
+            try
+            {
+                mediaReview.Stop();
+                mediaReview.Source = null;
+            }
+            catch { }
+        }
+
+        private void ButtonMarkFalsePositive_Click(object sender, RoutedEventArgs e)
+        {
+            if (_reviewSelected == null || _reviewFolder == null) return;
+
+            var result = MessageBox.Show(
+                "この検出を誤検知として削除しますか?\n(画像・動画ファイルは _del フォルダへ移動されます)",
+                "確認", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (result != MessageBoxResult.Yes) return;
+
+            try
+            {
+                MeteorDetectionListStore.MarkAsFalsePositive(_reviewFolder, _reviewSelected);
+                LoadReviewFolder(_reviewFolder);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"削除に失敗しました:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
@@ -475,6 +735,7 @@ namespace HDMICapture.App
                 _videoSource?.Stop();
                 Cleanup();
                 _meteorController.Dispose();
+                StopMovie();
             }
             catch { }
             base.OnClosed(e);
