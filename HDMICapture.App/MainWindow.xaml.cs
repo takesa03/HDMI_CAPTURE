@@ -16,15 +16,89 @@ namespace HDMICapture.App
         private DateTime _lastFpsUpdate;
         private WriteableBitmap? _previewBitmap;
 
+        private readonly MeteorDetectionController _meteorController = new();
+        private bool _meteorDetectionActive;
+        private double _captureFps = 30.0;
+        private readonly AppSettings _appSettings = AppConfig.Load();
+        private bool _isRestoringSettings;
+
         public MainWindow()
         {
             InitializeComponent();
             _ = RefreshDevicesAsync();
+
+            _meteorController.MeteorDetected += MeteorController_MeteorDetected;
+            _meteorController.ErrorOccurred += MeteorController_ErrorOccurred;
+
+            RestoreSettings();
+        }
+
+        private void RestoreSettings()
+        {
+            _isRestoringSettings = true;
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(_appSettings.MeteorOutputDirectory))
+                    textBoxMeteorOutputDir.Text = _appSettings.MeteorOutputDirectory;
+
+                if (!string.IsNullOrWhiteSpace(_appSettings.NdiName))
+                    textBoxNDIName.Text = _appSettings.NdiName;
+
+                checkBoxAudioEnabled.IsChecked = _appSettings.AudioEnabled;
+
+                int exposureIndex = Math.Clamp(_appSettings.ExposureSeconds - 1, 0, 4);
+                comboBoxExposure.SelectedIndex = exposureIndex;
+
+                if (!string.IsNullOrWhiteSpace(_appSettings.MaskFilePath))
+                {
+                    if (System.IO.File.Exists(_appSettings.MaskFilePath))
+                    {
+                        try
+                        {
+                            _meteorController.LoadMask(_appSettings.MaskFilePath);
+                            labelMaskStatus.Text = System.IO.Path.GetFileName(_appSettings.MaskFilePath);
+                        }
+                        catch (Exception ex)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"マスク画像の復元に失敗: {ex.Message}");
+                        }
+                    }
+                    else
+                    {
+                        System.Diagnostics.Debug.WriteLine($"保存されたマスク画像が見つかりません: {_appSettings.MaskFilePath}");
+                    }
+                }
+            }
+            finally
+            {
+                _isRestoringSettings = false;
+            }
         }
 
         private async void ButtonRefreshDevices_Click(object sender, RoutedEventArgs e)
         {
             await RefreshDevicesAsync();
+        }
+
+        private void TextBoxNDIName_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (_isRestoringSettings) return;
+            _appSettings.NdiName = textBoxNDIName.Text;
+            AppConfig.Save(_appSettings);
+        }
+
+        private void CheckBoxAudioEnabled_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_isRestoringSettings) return;
+            _appSettings.AudioEnabled = checkBoxAudioEnabled.IsChecked == true;
+            AppConfig.Save(_appSettings);
+        }
+
+        private void ComboBoxExposure_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_isRestoringSettings) return;
+            _appSettings.ExposureSeconds = comboBoxExposure.SelectedIndex + 1;
+            AppConfig.Save(_appSettings);
         }
 
         private async System.Threading.Tasks.Task RefreshDevicesAsync()
@@ -99,6 +173,20 @@ namespace HDMICapture.App
 
                 _ndiSender = new NdiSender(ndiName, width, height, fps);
                 labelCaptureInfo.Text = $"キャプチャー: {width}x{height} @ {fps:F1} fps";
+                _captureFps = fps;
+
+                // 流星検出はON/OFFチェックボックスで制御。開始時に一度だけ状態を確定する
+                // (VideoSource_FrameReceivedはキャプチャスレッドから呼ばれるため、
+                //  実行中にチェックボックスへ直接アクセスするとクロススレッドエラーになる)。
+                _meteorDetectionActive = checkBoxMeteorDetection.IsChecked == true;
+                if (_meteorDetectionActive)
+                {
+                    _meteorController.Exposure = comboBoxExposure.SelectedIndex + 1;
+                    _meteorController.OutputDirectory = string.IsNullOrWhiteSpace(textBoxMeteorOutputDir.Text)
+                        ? "meteor_output" : textBoxMeteorOutputDir.Text;
+                    _meteorController.Reset();
+                    labelMeteorCount.Text = "検出: 0件";
+                }
 
                 // チェックボックスがONの場合のみ、選択した映像デバイスと同じ機器のオーディオインターフェースを探して音声キャプチャを開始
                 if (checkBoxAudioEnabled.IsChecked == true)
@@ -122,6 +210,9 @@ namespace HDMICapture.App
                 buttonStop.IsEnabled = true;
                 comboBoxDevices.IsEnabled = false;
                 checkBoxAudioEnabled.IsEnabled = false;
+                checkBoxMeteorDetection.IsEnabled = false;
+                comboBoxExposure.IsEnabled = false;
+                buttonSelectOutputDir.IsEnabled = false;
                 textBoxNDIName.IsReadOnly = true;
 
                 _frameCount = 0;
@@ -152,7 +243,13 @@ namespace HDMICapture.App
                 buttonStop.IsEnabled = false;
                 comboBoxDevices.IsEnabled = true;
                 checkBoxAudioEnabled.IsEnabled = true;
+                checkBoxMeteorDetection.IsEnabled = true;
+                comboBoxExposure.IsEnabled = true;
+                buttonSelectOutputDir.IsEnabled = true;
                 textBoxNDIName.IsReadOnly = false;
+
+                _meteorDetectionActive = false;
+                _meteorController.Reset();
             }
             catch (Exception ex)
             {
@@ -206,6 +303,20 @@ namespace HDMICapture.App
                 }
             }
 
+            // 流星検出(ONの場合のみ)。重い処理はコントローラ内でTask.Run実行するため、
+            // ここではフレームのコピー渡しのみで、キャプチャループをブロックしない。
+            if (_meteorDetectionActive && e.FrameData.Length > 0)
+            {
+                try
+                {
+                    _meteorController.AddFrame(e.FrameData, e.Width, e.Height, _captureFps);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"流星検出エラー: {ex.Message}");
+                }
+            }
+
             // Update preview
             try
             {
@@ -229,6 +340,70 @@ namespace HDMICapture.App
             {
                 labelInfo.Text = $"エラー: {error}";
             });
+        }
+
+        private void MeteorController_MeteorDetected(object? sender, MeteorDetectedEventArgs e)
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                labelMeteorCount.Text = $"検出: {e.Count}件";
+            });
+            System.Diagnostics.Debug.WriteLine($"流星検出: {e.ImagePath} / {e.DiffImagePath} / {e.MoviePath}");
+        }
+
+        private void MeteorController_ErrorOccurred(object? sender, string error)
+        {
+            System.Diagnostics.Debug.WriteLine($"流星検出エラー: {error}");
+        }
+
+        private void ButtonSelectMask_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = "マスク画像を選択",
+                Filter = "画像ファイル|*.png;*.jpg;*.jpeg;*.bmp|すべてのファイル|*.*"
+            };
+
+            if (dlg.ShowDialog() == true)
+            {
+                try
+                {
+                    _meteorController.LoadMask(dlg.FileName);
+                    labelMaskStatus.Text = System.IO.Path.GetFileName(dlg.FileName);
+
+                    _appSettings.MaskFilePath = dlg.FileName;
+                    AppConfig.Save(_appSettings);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"マスク画像の読み込みに失敗しました:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+        }
+
+        private void ButtonClearMask_Click(object sender, RoutedEventArgs e)
+        {
+            _meteorController.ClearMask();
+            labelMaskStatus.Text = "なし";
+
+            _appSettings.MaskFilePath = null;
+            AppConfig.Save(_appSettings);
+        }
+
+        private void ButtonSelectOutputDir_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new Microsoft.Win32.OpenFolderDialog
+            {
+                Title = "流星検出の出力先フォルダを選択"
+            };
+
+            if (dlg.ShowDialog() == true)
+            {
+                textBoxMeteorOutputDir.Text = dlg.FolderName;
+
+                _appSettings.MeteorOutputDirectory = dlg.FolderName;
+                AppConfig.Save(_appSettings);
+            }
         }
 
         private void AudioCapture_AudioFrameReceived(object? sender, AudioFrameEventArgs e)
@@ -299,6 +474,7 @@ namespace HDMICapture.App
             {
                 _videoSource?.Stop();
                 Cleanup();
+                _meteorController.Dispose();
             }
             catch { }
             base.OnClosed(e);

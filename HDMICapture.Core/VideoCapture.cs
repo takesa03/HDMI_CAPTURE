@@ -136,6 +136,13 @@ namespace HDMICapture.Core
                         if (frame.Empty())
                             continue;
 
+                        // capture.Read()がブロックしている間にStop()が呼ばれることがある。
+                        // その場合、直前に取得できてしまったこのフレームは配信しない
+                        // (デバイス停止シーケンス中は破損/黒つぶれフレームが混じりやすく、
+                        //  誤検出の原因になるため)。
+                        if (cancellationToken.IsCancellationRequested || !_isRunning)
+                            break;
+
                         // Keep BGR as-is and add alpha channel
                         Cv2.CvtColor(frame, rgbaFrame, ColorConversionCodes.BGR2BGRA);
 

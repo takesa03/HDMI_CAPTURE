@@ -7,6 +7,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <!-- 上部: コントロール -->
@@ -38,14 +39,14 @@
             <!-- NDI名設定 -->
             <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0">
                 <Label Padding="0" VerticalAlignment="Center" FontSize="12">NDI:</Label>
-                <TextBox Name="textBoxNDIName" Width="140" Height="28" Text="HDMI Capture" Padding="5" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                <TextBox Name="textBoxNDIName" Width="140" Height="28" Text="HDMI Capture" Padding="5" Margin="5,0,0,0" VerticalAlignment="Center" TextChanged="TextBoxNDIName_TextChanged"/>
             </StackPanel>
 
             <!-- デバイス選択 -->
             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                 <Label Padding="0" VerticalAlignment="Center" FontSize="12">デバイス:</Label>
                 <ComboBox Name="comboBoxDevices" Width="180" Height="28" Margin="5,0,0,0" VerticalAlignment="Center"/>
-                <CheckBox Name="checkBoxAudioEnabled" Content="音声" IsChecked="True" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                <CheckBox Name="checkBoxAudioEnabled" Content="音声" IsChecked="True" VerticalAlignment="Center" Margin="8,0,0,0" Checked="CheckBoxAudioEnabled_Changed" Unchecked="CheckBoxAudioEnabled_Changed"/>
                 <Button Name="buttonRefreshDevices" Content="更新" Width="70" Height="28" Click="ButtonRefreshDevices_Click" Margin="8,0,0,0" VerticalAlignment="Center" Padding="0"/>
             </StackPanel>
 
@@ -61,5 +62,46 @@
                 <Button Name="buttonStop" Content="停止" Width="80" Height="35" Click="ButtonStop_Click" Background="#F44336" Foreground="White" FontSize="13" IsEnabled="False" Margin="5,0,0,0"/>
             </StackPanel>
         </Grid>
+
+        <!-- 流星検出設定 -->
+        <Border Grid.Row="3" BorderThickness="1,1,1,0" BorderBrush="#CCCCCC" Margin="12,0,12,12" Padding="10,6" Background="White">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,16,0">
+                    <CheckBox Name="checkBoxMeteorDetection" Content="流星検出" VerticalAlignment="Center" FontSize="12"/>
+                    <Label Padding="0" VerticalAlignment="Center" FontSize="12" Margin="10,0,0,0">露出:</Label>
+                    <ComboBox Name="comboBoxExposure" Width="60" Height="24" Margin="5,0,0,0" VerticalAlignment="Center" SelectedIndex="3" SelectionChanged="ComboBoxExposure_SelectionChanged">
+                        <ComboBoxItem Content="1秒"/>
+                        <ComboBoxItem Content="2秒"/>
+                        <ComboBoxItem Content="3秒"/>
+                        <ComboBoxItem Content="4秒"/>
+                        <ComboBoxItem Content="5秒"/>
+                    </ComboBox>
+                </StackPanel>
+
+                <!-- マスク設定 -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,16,0">
+                    <Label Padding="0" VerticalAlignment="Center" FontSize="12">マスク:</Label>
+                    <TextBlock Name="labelMaskStatus" Text="なし" FontSize="11" Foreground="#666666" VerticalAlignment="Center" Margin="5,0,0,0" Width="140"/>
+                    <Button Name="buttonSelectMask" Content="選択..." Width="60" Height="24" Click="ButtonSelectMask_Click" Margin="5,0,0,0" Padding="0"/>
+                    <Button Name="buttonClearMask" Content="クリア" Width="50" Height="24" Click="ButtonClearMask_Click" Margin="5,0,0,0" Padding="0"/>
+                </StackPanel>
+
+                <!-- 出力先 -->
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Label Padding="0" VerticalAlignment="Center" FontSize="12">出力先:</Label>
+                    <TextBox Name="textBoxMeteorOutputDir" Width="220" Height="24" Text="meteor_output" Padding="3" Margin="5,0,0,0" VerticalAlignment="Center" IsReadOnly="True"/>
+                    <Button Name="buttonSelectOutputDir" Content="参照..." Width="60" Height="24" Click="ButtonSelectOutputDir_Click" Margin="5,0,0,0" Padding="0"/>
+                </StackPanel>
+
+                <TextBlock Name="labelMeteorCount" Grid.Column="3" Text="検出: 0件" FontSize="12" VerticalAlignment="Center" Margin="16,0,0,0"/>
+            </Grid>
+        </Border>
     </Grid>
 </Window>
