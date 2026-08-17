@@ -106,10 +106,28 @@ namespace HDMICapture.Core
                     var diffs = _detector.Diff(images);
 
                     using var diffComposite = MeteorDetector.Brightest(diffs);
-                    foreach (var d in diffs) d.Dispose();
 
                     var lines = _detector.Detect(diffComposite);
-                    if (lines != null)
+
+                    // 建物の輪郭等、常に写り込んでいる静止構造物は圧縮ノイズ等でほぼ全フレーム
+                    // ペアに信号が現れ続けるため、IsStraightTrackだけでは誤検出を防げない。
+                    // 露出内のごく一部のフレームペアにしか信号が現れない「一時的な物体」
+                    // (流星)かどうかも合わせて判定する。
+                    // さらに、飛行機や人工衛星は移動が遅い傾向があるため、見かけの角速度が
+                    // 流星並みに速いかどうかも確認する。
+                    //
+                    // 注: 隣接するウィンドウを跨いだ連続性による棄却は行わない。流星も
+                    // 4秒区切りの境界にかかるタイミングでは2つのウィンドウに分断されて
+                    // 写ることがあり、一律に「前ウィンドウの続き」として棄却すると本物の
+                    // 流星を見逃す恐れがあるため。飛行機・衛星の誤検知は検出一覧から
+                    // 手動で削除する運用とする。
+                    bool isMeteor = lines != null
+                        && _detector.IsTransient(diffs, lines)
+                        && _detector.IsFastEnough(diffs, lines, _fps);
+
+                    foreach (var d in diffs) d.Dispose();
+
+                    if (isMeteor)
                     {
                         var now = DateTime.Now;
                         _detectCount++;
@@ -125,7 +143,7 @@ namespace HDMICapture.Core
                         // MeteorDetectTestの--test-samplesで実装した目視確認用のマーキングと同じ。
                         using var diffMarked = new Mat();
                         Cv2.CvtColor(diffComposite, diffMarked, ColorConversionCodes.GRAY2BGR);
-                        foreach (var l in lines)
+                        foreach (var l in lines!)
                             Cv2.Line(diffMarked, l.P1, l.P2, new Scalar(0, 0, 255), 2, LineTypes.AntiAlias);
 
                         string diffPath = Path.Combine(OutputDirectory, timestamp + "_diff.jpg");

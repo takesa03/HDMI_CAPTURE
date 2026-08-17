@@ -41,10 +41,31 @@ namespace HDMICapture.Core
         // (=ノイズ量)に判定が左右されないようにする。
         public int MinBlobExtentPixels { get; set; } = 8;
 
+        // 建物の屋根の輪郭など、映像に常に写り込んでいる静止構造物は、圧縮ノイズや
+        // 微振動によって「常にわずかに一定の直線」として毎フレームペアに現れてしまい、
+        // IsStraightTrackの判定だけでは(実際に1本の直線であるがゆえに)誤検出を防げない。
+        // 流星のような一時的に現れて消える物体は、露出内のごく一部のフレームペアにしか
+        // 信号が現れないはずなので、その時間的な局在性で区別する。
+        public byte TransientSignalThreshold { get; set; } = 25;
+        public double MaxPersistenceRatio { get; set; } = 0.7;
+
+        // 飛行機や人工衛星は、流星に比べて見かけの移動速度(角速度)が遅い傾向があるが、
+        // 広角レンズで撮影した実データで比較したところ、遅い流星(25px/s程度)と
+        // 飛行機(18〜28px/s程度)の速度域は重なってしまい、単独の閾値では区別できない
+        // ことが分かった。そのため、これは極端に遅い物体だけを弾く安全網として使う。
+        // (飛行機・衛星の誤検知は検出一覧から手動で削除する運用とする。)
+        public double MinAngularSpeedPxPerSec { get; set; } = 15.0;
+
         // 映像周囲の除外幅(px)。安価なキャプチャデバイスでは映像の端に
         // 固定的な黒帯やノイズが乗ることがあり、誤検出の原因になるため
         // マスクの有無に関わらず常時これを除外する。
         public int BorderExclusionPixels { get; set; } = 5;
+
+        // 除外領域(外周+ユーザーマスク)は、diffの時点で強制的に一定値にしているため、
+        // その境界そのものが常に一定の直線として現れやすい(実映像のノイズが強いほど
+        // 顕著になる)。Canny後のエッジ判定では、除外領域をこの分だけ外側に広げてから
+        // 取り除くことで、境界線自体が誤検出されるのを防ぐ。
+        public int EdgeExclusionMarginPixels { get; set; } = 8;
 
         private Mat? _mask;
 
@@ -188,10 +209,92 @@ namespace HDMICapture.Core
             using var canny = new Mat();
             Cv2.Canny(blur, canny, CannyThreshold1, CannyThreshold2, 3);
 
+            // 除外領域の境界線そのものが誤検出されるのを防ぐため、境界を少し広げてから
+            // Cannyエッジ側で明示的に取り除く(diff計算時のマスクだけでは境界に沿った
+            // 人工的なエッジが残ってしまうことがある)。
+            using var exclusionMask = BuildEffectiveMask(canny.Size());
+            using var dilatedExclusion = new Mat();
+            if (EdgeExclusionMarginPixels > 0)
+            {
+                using var kernel = Cv2.GetStructuringElement(
+                    MorphShapes.Rect,
+                    new Size(EdgeExclusionMarginPixels * 2 + 1, EdgeExclusionMarginPixels * 2 + 1));
+                Cv2.Dilate(exclusionMask, dilatedExclusion, kernel);
+            }
+            else
+            {
+                exclusionMask.CopyTo(dilatedExclusion);
+            }
+            using var allowedArea = new Mat();
+            Cv2.BitwiseNot(dilatedExclusion, allowedArea);
+            Cv2.BitwiseAnd(canny, allowedArea, canny);
+
             var lines = Cv2.HoughLinesP(canny, 1, Math.PI / 180, HoughThreshold, MinLineLength, MaxLineGap);
             if (lines.Length == 0) return null;
 
             return IsStraightTrack(canny, lines) ? lines : null;
+        }
+
+        // 検出された線分が、露出内のごく一部のフレームペアにしか現れていない
+        // 「一時的な物体」(流星)かどうかを判定する。
+        // 建物の輪郭等の静止構造物は圧縮ノイズ等でほぼ全フレームペアに信号が
+        // 現れ続けるため、信号が現れたフレームペアの割合(persistenceRatio)が
+        // 高すぎる場合は静止構造物とみなして棄却する。
+        public bool IsTransient(IReadOnlyList<Mat> diffs, LineSegmentPoint[] lines)
+            => ComputePersistenceRatio(diffs, lines) <= MaxPersistenceRatio;
+
+        // 検出線分のcorridor内に信号が現れているフレームペアの割合(0.0〜1.0)を返す。
+        // 診断・閾値調整用にpublicで公開している。
+        public double ComputePersistenceRatio(IReadOnlyList<Mat> diffs, LineSegmentPoint[] lines)
+        {
+            if (diffs.Count == 0) return 1.0;
+
+            using var corridor = new Mat(diffs[0].Size(), MatType.CV_8UC1, Scalar.All(0));
+            foreach (var line in lines)
+                Cv2.Line(corridor, line.P1, line.P2, Scalar.All(255), CorridorWidthPixels);
+
+            int framesWithSignal = 0;
+            foreach (var d in diffs)
+            {
+                Cv2.MinMaxLoc(d, out _, out double maxVal, out _, out _, corridor);
+                if (maxVal >= TransientSignalThreshold) framesWithSignal++;
+            }
+
+            return (double)framesWithSignal / diffs.Count;
+        }
+
+        // 飛行機や人工衛星のような低速移動物体を、見かけの角速度(px/秒)で棄却する。
+        // 流星は非常に高速なため、検出線の長さに対して信号が持続する時間(フレーム数)が短い。
+        public bool IsFastEnough(IReadOnlyList<Mat> diffs, LineSegmentPoint[] lines, double fps)
+            => ComputeAngularSpeed(diffs, lines, fps) >= MinAngularSpeedPxPerSec;
+
+        // 検出線の見かけの移動速度(px/秒)を推定する。診断・閾値調整用にpublicで公開している。
+        // corridor内に信号が現れ続けた期間(最初〜最後に信号があったフレームペアの範囲)を
+        // 移動に要した時間とみなし、検出線の長さをその時間で割る。
+        public double ComputeAngularSpeed(IReadOnlyList<Mat> diffs, LineSegmentPoint[] lines, double fps)
+        {
+            if (diffs.Count == 0 || fps <= 0) return 0;
+
+            using var corridor = new Mat(diffs[0].Size(), MatType.CV_8UC1, Scalar.All(0));
+            foreach (var line in lines)
+                Cv2.Line(corridor, line.P1, line.P2, Scalar.All(255), CorridorWidthPixels);
+
+            int firstIndex = -1, lastIndex = -1;
+            for (int i = 0; i < diffs.Count; i++)
+            {
+                Cv2.MinMaxLoc(diffs[i], out _, out double maxVal, out _, out _, corridor);
+                if (maxVal >= TransientSignalThreshold)
+                {
+                    if (firstIndex < 0) firstIndex = i;
+                    lastIndex = i;
+                }
+            }
+
+            if (firstIndex < 0) return 0;
+
+            double durationSeconds = Math.Max(1.0 / fps, (lastIndex - firstIndex + 1) / fps);
+            double primaryLength = lines.Max(LineLength);
+            return primaryLength / durationSeconds;
         }
 
         // 最長の線分(主軸)を基準に、同一直線上とみなせる線分だけを集めた帯領域を作り、
