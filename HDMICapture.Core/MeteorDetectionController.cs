@@ -64,10 +64,18 @@ namespace HDMICapture.Core
             _detectCount = 0;
         }
 
-        // BGRAのフレームデータを追加する。露出時間分たまったら非同期で検出処理を行う。
-        public void AddFrame(byte[] bgraData, int width, int height, double fps)
+        // BGRAのフレームデータを追加する。露出時間分たまったら検出処理を行う。
+        // timestampを省略した場合は実時刻(DateTime.Now)でウィンドウの区切りを判定する
+        // (ライブキャプチャ向け)。ファイルモードのように実時間を無視して高速に読み進める
+        // 場合は、フレームごとのシミュレート時刻を明示的に渡す。
+        // synchronous=trueの場合、検出処理(重い画像処理・ファイル保存)を呼び出し元スレッドで
+        // 同期実行する。ファイルモードでは呼び出し元(ファイル読み込みスレッド)が自然に
+        // 検出処理の完了を待つことになり、大きなファイルを読み進めてもウィンドウが
+        // 溜まり続けてメモリを圧迫することがない。
+        public void AddFrame(byte[] bgraData, int width, int height, double fps, DateTime? timestamp = null, bool synchronous = false)
         {
             _fps = fps > 0 ? fps : 30;
+            DateTime frameTime = timestamp ?? DateTime.Now;
 
             using var bgra = new Mat(height, width, MatType.CV_8UC4);
             System.Runtime.InteropServices.Marshal.Copy(bgraData, 0, bgra.Data, bgraData.Length);
@@ -78,10 +86,10 @@ namespace HDMICapture.Core
 
             lock (_lock)
             {
-                if (_window.Frames.Count == 0) _window.StartTime = DateTime.Now;
+                if (_window.Frames.Count == 0) _window.StartTime = frameTime;
                 _window.Frames.Add(bgr);
 
-                if ((DateTime.Now - _window.StartTime).TotalSeconds >= Exposure)
+                if ((frameTime - _window.StartTime).TotalSeconds >= Exposure)
                 {
                     snapshot = _window;
                     _window = new FrameWindow();
@@ -91,7 +99,35 @@ namespace HDMICapture.Core
             if (snapshot != null)
             {
                 var w = snapshot;
-                Task.Run(() => ProcessWindow(w));
+                if (synchronous)
+                    ProcessWindow(w);
+                else
+                    Task.Run(() => ProcessWindow(w));
+            }
+        }
+
+        // ファイルモードの末尾で、露出時間に満たず溜まったままの端数フレームを処理する。
+        // ライブキャプチャは終了がないため使用しない。
+        public void Flush(bool synchronous = true)
+        {
+            FrameWindow? snapshot = null;
+
+            lock (_lock)
+            {
+                if (_window.Frames.Count > 0)
+                {
+                    snapshot = _window;
+                    _window = new FrameWindow();
+                }
+            }
+
+            if (snapshot != null)
+            {
+                var w = snapshot;
+                if (synchronous)
+                    ProcessWindow(w);
+                else
+                    Task.Run(() => ProcessWindow(w));
             }
         }
 

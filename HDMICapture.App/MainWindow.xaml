@@ -14,11 +14,20 @@
         <!-- 上部: コントロール -->
         <StackPanel Grid.Row="0" Orientation="Vertical" Margin="12">
             <!-- ステータスバー -->
-            <Border Name="statusBorder" Background="#FF4444" CornerRadius="4" Padding="8,4" Margin="0,0,0,12" Width="140" HorizontalAlignment="Left">
-                <TextBlock Name="labelStatus" Text="● 停止中" FontSize="14" Foreground="White" FontWeight="Bold"/>
-            </Border>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                <Border Name="statusBorder" Background="#FF4444" CornerRadius="4" Padding="8,4" Width="140" HorizontalAlignment="Left">
+                    <TextBlock Name="labelStatus" Text="● 停止中" FontSize="14" Foreground="White" FontWeight="Bold"/>
+                </Border>
 
-
+                <StackPanel Orientation="Horizontal" Margin="16,0,0,0" VerticalAlignment="Center">
+                    <RadioButton Name="radioModeCapture" Content="キャプチャモード" GroupName="sourceMode" IsChecked="True"
+                                 Checked="SourceMode_Changed" VerticalAlignment="Center" Margin="0,0,16,0"/>
+                    <RadioButton Name="radioModeFile" Content="ファイルモード" GroupName="sourceMode"
+                                 Checked="SourceMode_Changed" VerticalAlignment="Center" Margin="0,0,16,0"/>
+                    <RadioButton Name="radioModeStreaming" Content="ストリーミングモード" GroupName="sourceMode"
+                                 Checked="SourceMode_Changed" VerticalAlignment="Center"/>
+                </StackPanel>
+            </StackPanel>
         </StackPanel>
 
         <!-- 中央: プレビュー + 検出レビューパネル -->
@@ -93,18 +102,35 @@
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
 
-            <!-- NDI名設定 -->
-            <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0">
+            <!-- NDI名設定(キャプチャモード) -->
+            <StackPanel Name="panelNdiName" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0">
                 <Label Padding="0" VerticalAlignment="Center" FontSize="12">NDI:</Label>
                 <TextBox Name="textBoxNDIName" Width="140" Height="28" Text="HDMI Capture" Padding="5" Margin="5,0,0,0" VerticalAlignment="Center" TextChanged="TextBoxNDIName_TextChanged"/>
             </StackPanel>
 
-            <!-- デバイス選択 -->
-            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+            <!-- デバイス選択(キャプチャモード) -->
+            <StackPanel Name="panelDeviceSelect" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                 <Label Padding="0" VerticalAlignment="Center" FontSize="12">デバイス:</Label>
                 <ComboBox Name="comboBoxDevices" Width="180" Height="28" Margin="5,0,0,0" VerticalAlignment="Center"/>
                 <CheckBox Name="checkBoxAudioEnabled" Content="音声" IsChecked="True" VerticalAlignment="Center" Margin="8,0,0,0" Checked="CheckBoxAudioEnabled_Changed" Unchecked="CheckBoxAudioEnabled_Changed"/>
                 <Button Name="buttonRefreshDevices" Content="更新" Width="70" Height="28" Click="ButtonRefreshDevices_Click" Margin="8,0,0,0" VerticalAlignment="Center" Padding="0"/>
+            </StackPanel>
+
+            <!-- ソースファイル・開始日時(ファイルモード) -->
+            <StackPanel Name="panelFileSource" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed">
+                <Label Padding="0" VerticalAlignment="Center" FontSize="12">ファイル:</Label>
+                <TextBox Name="textBoxSourceFile" Width="250" Height="28" Padding="5" Margin="5,0,0,0" VerticalAlignment="Center" IsReadOnly="True"/>
+                <Button Name="buttonSelectSourceFile" Content="選択..." Width="60" Height="28" Click="ButtonSelectSourceFile_Click" Margin="5,0,0,0" Padding="0"/>
+                <Label Padding="0" VerticalAlignment="Center" FontSize="12" Margin="12,0,0,0">開始日時:</Label>
+                <DatePicker Name="datePickerStartTime" Width="112" Height="28" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                <TextBox Name="textBoxStartTimeOfDay" Width="66" Height="28" Text="00:00:00" Padding="5" Margin="4,0,0,0" VerticalAlignment="Center"/>
+            </StackPanel>
+
+            <!-- RTSP URL(ストリーミングモード) -->
+            <StackPanel Name="panelRtspSource" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed">
+                <Label Padding="0" VerticalAlignment="Center" FontSize="12">RTSP URL:</Label>
+                <TextBox Name="textBoxRtspUrl" Width="260" Height="28" Padding="5" Margin="5,0,0,0" VerticalAlignment="Center"
+                         Text="rtsp://" TextChanged="TextBoxRtspUrl_TextChanged"/>
             </StackPanel>
 
             <!-- 情報表示 -->

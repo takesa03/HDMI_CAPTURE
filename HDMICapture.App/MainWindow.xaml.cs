@@ -27,12 +27,23 @@ namespace HDMICapture.App
         private readonly AppSettings _appSettings = AppConfig.Load();
         private bool _isRestoringSettings;
 
+        private bool _isFileMode;
+        private DateTime _lastPreviewUpdate = DateTime.MinValue;
+
         private string? _reviewFolder;
         private List<MeteorDetectionRecord> _reviewRecords = new();
         private MeteorDetectionRecord? _reviewSelected;
 
         public MainWindow()
         {
+            // InitializeComponent()はXAML上のText/IsChecked/SelectedIndex等の既定値を
+            // 各コントロールへ設定する過程で、対応するTextChanged/Checked/SelectionChanged
+            // ハンドラを発火させる。それらのハンドラは設定変更のたびにsettings.jsonへ保存する
+            // ため、ガードを立てずにいるとXAML既定値(例: RTSP URLの"rtsp://")で保存済みの値を
+            // 即座に上書きしてしまう。RestoreSettings()側のガードだけでは
+            // InitializeComponent()中の発火を防げないため、ここで先に立てておく。
+            _isRestoringSettings = true;
+
             InitializeComponent();
             _ = RefreshDevicesAsync();
 
@@ -52,6 +63,9 @@ namespace HDMICapture.App
 
                 if (!string.IsNullOrWhiteSpace(_appSettings.NdiName))
                     textBoxNDIName.Text = _appSettings.NdiName;
+
+                if (!string.IsNullOrWhiteSpace(_appSettings.RtspUrl))
+                    textBoxRtspUrl.Text = _appSettings.RtspUrl;
 
                 checkBoxAudioEnabled.IsChecked = _appSettings.AudioEnabled;
                 checkBoxMeteorDetection.IsChecked = _appSettings.MeteorDetectionEnabled;
@@ -114,6 +128,13 @@ namespace HDMICapture.App
             AppConfig.Save(_appSettings);
         }
 
+        private void TextBoxRtspUrl_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (_isRestoringSettings) return;
+            _appSettings.RtspUrl = textBoxRtspUrl.Text;
+            AppConfig.Save(_appSettings);
+        }
+
         private void CheckBoxAudioEnabled_Changed(object sender, RoutedEventArgs e)
         {
             if (_isRestoringSettings) return;
@@ -133,6 +154,69 @@ namespace HDMICapture.App
             if (_isRestoringSettings) return;
             _appSettings.ExposureSeconds = comboBoxExposure.SelectedIndex + 1;
             AppConfig.Save(_appSettings);
+        }
+
+        private void SourceMode_Changed(object sender, RoutedEventArgs e)
+        {
+            // XAML解析中にIsChecked="True"の初期適用で発火することがあるため、
+            // まだ生成されていないコントロールへのアクセスを避けるガードを入れる。
+            if (panelFileSource == null || panelNdiName == null || panelDeviceSelect == null || panelRtspSource == null) return;
+
+            bool fileMode = radioModeFile.IsChecked == true;
+            bool streamingMode = radioModeStreaming.IsChecked == true;
+            bool captureMode = !fileMode && !streamingMode;
+
+            // NDI出力はキャプチャモード・ストリーミングモードの両方で使うため、
+            // ファイルモードのときだけ隠す。
+            panelNdiName.Visibility = fileMode ? Visibility.Collapsed : Visibility.Visible;
+            panelDeviceSelect.Visibility = captureMode ? Visibility.Visible : Visibility.Collapsed;
+            panelFileSource.Visibility = fileMode ? Visibility.Visible : Visibility.Collapsed;
+            panelRtspSource.Visibility = streamingMode ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void ButtonSelectSourceFile_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = "検出対象の映像ファイルを選択",
+                Filter = "映像ファイル|*.mp4;*.m2ts;*.mov;*.avi;*.mkv;*.ts;*.wmv|すべてのファイル|*.*"
+            };
+
+            if (dlg.ShowDialog() == true)
+            {
+                textBoxSourceFile.Text = dlg.FileName;
+
+                DateTime guessed = GuessRecordingStartTime(dlg.FileName);
+                datePickerStartTime.SelectedDate = guessed.Date;
+                textBoxStartTimeOfDay.Text = guessed.ToString("HH:mm:ss");
+            }
+        }
+
+        // ファイル名に「yyyyMMddHHmmss」形式の14桁が含まれる場合はそれを撮影開始日時として
+        // 優先する(このユーザーの運用ではATOM Cam2等の出力ファイル名がこの形式のため、
+        // ファイルシステムの日時属性より信頼できる)。見つからない場合は、ファイルの
+        // 更新日時と作成日時のうち古い方(コピー等で作成日時だけ新しくなっている場合が
+        // 多いため)を撮影開始日時の推定値として使う。
+        private static DateTime GuessRecordingStartTime(string path)
+        {
+            string name = System.IO.Path.GetFileNameWithoutExtension(path);
+            var match = System.Text.RegularExpressions.Regex.Match(name, @"(?<!\d)(\d{14})(?!\d)");
+            if (match.Success && DateTime.TryParseExact(match.Value, "yyyyMMddHHmmss",
+                    System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var fromName))
+            {
+                return fromName;
+            }
+
+            try
+            {
+                var created = System.IO.File.GetCreationTime(path);
+                var modified = System.IO.File.GetLastWriteTime(path);
+                return created < modified ? created : modified;
+            }
+            catch
+            {
+                return DateTime.Now;
+            }
         }
 
         private void OverlayStyle_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -215,6 +299,16 @@ namespace HDMICapture.App
 
         private void ButtonStart_Click(object sender, RoutedEventArgs e)
         {
+            if (radioModeFile.IsChecked == true)
+                StartFileMode();
+            else if (radioModeStreaming.IsChecked == true)
+                StartStreamingMode();
+            else
+                StartCaptureMode();
+        }
+
+        private void StartCaptureMode()
+        {
             if (comboBoxDevices.SelectedItem == null)
             {
                 MessageBox.Show("デバイスを選択してください", "エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -223,6 +317,7 @@ namespace HDMICapture.App
 
             try
             {
+                _isFileMode = false;
                 string deviceName = comboBoxDevices.SelectedItem.ToString() ?? "Unknown";
 
                 // Initialize video capture (using OpenCV backend)
@@ -233,20 +328,24 @@ namespace HDMICapture.App
                 // Start capture
                 _videoSource.Start();
 
-                // Wait briefly for device to initialize and get actual resolution/FPS
-                System.Threading.Thread.Sleep(500);
+                int width = _videoSource is OpenCvVideoCapture ocv && ocv.ActualWidth > 0 ? ocv.ActualWidth : 1920;
+                int height = _videoSource is OpenCvVideoCapture ocv2 && ocv2.ActualHeight > 0 ? ocv2.ActualHeight : 1080;
+                double declaredFps = _videoSource is OpenCvVideoCapture ocv3 && ocv3.ActualFrameRate > 0 ? ocv3.ActualFrameRate : 30.0;
 
-                // Initialize NDI sender with actual device resolution and FPS
+                // デバイスが申告するFPS(MSMFのプロパティ取得値)は、実際にHDMIから
+                // 入力されている映像のフレームレートと一致しないことがある
+                // (キャプチャカードやドライバによっては常に既定値を返す等)。
+                // 開始直後の実フレーム到着間隔を実測し、その値を内部処理(流星検出の
+                // 露出ウィンドウ・タイムコード)・NDI出力・プレビューで共通の基準FPSとして使う。
+                double fps = MeasureInputFps(_videoSource, declaredFps);
+
+                // Initialize NDI sender with actual device resolution and measured FPS
                 string ndiName = textBoxNDIName.Text;
                 if (string.IsNullOrWhiteSpace(ndiName))
                     ndiName = "HDMI Capture";
 
-                int width = _videoSource is OpenCvVideoCapture ocv && ocv.ActualWidth > 0 ? ocv.ActualWidth : 1920;
-                int height = _videoSource is OpenCvVideoCapture ocv2 && ocv2.ActualHeight > 0 ? ocv2.ActualHeight : 1080;
-                double fps = _videoSource is OpenCvVideoCapture ocv3 && ocv3.ActualFrameRate > 0 ? ocv3.ActualFrameRate : 30.0;
-
                 _ndiSender = new NdiSender(ndiName, width, height, fps);
-                labelCaptureInfo.Text = $"キャプチャー: {width}x{height} @ {fps:F1} fps";
+                labelCaptureInfo.Text = $"キャプチャー: {width}x{height} @ {fps:F1} fps (申告値 {declaredFps:F1} fps)";
                 _captureFps = fps;
                 _captureHeight = height;
 
@@ -294,6 +393,228 @@ namespace HDMICapture.App
                 comboBoxExposure.IsEnabled = false;
                 buttonSelectOutputDir.IsEnabled = false;
                 textBoxNDIName.IsReadOnly = true;
+                radioModeCapture.IsEnabled = false;
+                radioModeFile.IsEnabled = false;
+                radioModeStreaming.IsEnabled = false;
+
+                _frameCount = 0;
+                _lastFpsUpdate = DateTime.Now;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"エラーが発生しました:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                Cleanup();
+            }
+        }
+
+        // キャプチャデバイスが対応する標準フレームレート。実測値・申告値はいずれも
+        // このうち最も近い値へ丸めて使用する(デバイスによっては開始直後の
+        // フレーム間隔にジッターが乗り、実測値が29.6や30.4のように微妙にぶれる
+        // ことがあるため、機器間の揺らぎを吸収してNDI側でも扱いやすくする)。
+        private static readonly double[] StandardFrameRates = { 10.0, 15.0, 24.0, 30.0, 60.0 };
+
+        // 開始直後、実際にFrameReceivedが発火する間隔からFPSを実測する。
+        // 呼び出し時点で既に本来のVideoSource_FrameReceivedも購読済みのため、
+        // プレビュー表示等はこの計測中も止まらず継続する(計測用ハンドラは
+        // カウントするだけの副次的な購読)。
+        // デバイスによっては開始直後は映像モードのロックが安定するまで数百ms
+        // かかることがあるため、まずウォームアップとして待ってから計測を始める。
+        // 明らかに異常な値(フレームがほとんど来ない、あるいはあり得ないほど
+        // 高頻度)は信頼せず、申告値(fallbackFps)にフォールバックする。
+        private double MeasureInputFps(IVideoSource source, double fallbackFps, int warmupMs = 800, int calibrationMs = 2000)
+        {
+            System.Threading.Thread.Sleep(warmupMs);
+
+            int frameCount = 0;
+            var counterLock = new object();
+
+            void Handler(object? s, VideoFrameEventArgs e)
+            {
+                lock (counterLock) frameCount++;
+            }
+
+            source.FrameReceived += Handler;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                System.Threading.Thread.Sleep(calibrationMs);
+            }
+            finally
+            {
+                source.FrameReceived -= Handler;
+                sw.Stop();
+            }
+
+            int counted;
+            lock (counterLock) counted = frameCount;
+
+            double elapsedSeconds = sw.Elapsed.TotalSeconds;
+            double raw = (counted >= 2 && elapsedSeconds > 0) ? counted / elapsedSeconds : fallbackFps;
+            if (raw < 1.0 || raw > 240.0)
+                raw = fallbackFps;
+
+            return SnapToStandardFrameRate(raw);
+        }
+
+        private static double SnapToStandardFrameRate(double fps)
+        {
+            double best = StandardFrameRates[0];
+            double bestDiff = Math.Abs(fps - best);
+            foreach (double rate in StandardFrameRates)
+            {
+                double diff = Math.Abs(fps - rate);
+                if (diff < bestDiff)
+                {
+                    best = rate;
+                    bestDiff = diff;
+                }
+            }
+            return best;
+        }
+
+        private void StartFileMode()
+        {
+            string path = textBoxSourceFile.Text;
+            if (string.IsNullOrWhiteSpace(path) || !System.IO.File.Exists(path))
+            {
+                MessageBox.Show("映像ファイルを選択してください", "エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            DateTime startDate = (datePickerStartTime.SelectedDate ?? DateTime.Today).Date;
+            if (!TimeSpan.TryParse(textBoxStartTimeOfDay.Text, out var timeOfDay))
+            {
+                MessageBox.Show("開始時刻の形式が正しくありません (例: 23:14:04)", "エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            DateTime startTime = startDate + timeOfDay;
+
+            try
+            {
+                _isFileMode = true;
+
+                var fileSource = new FileVideoCapture(path, startTime);
+                fileSource.FrameReceived += VideoSource_FrameReceived;
+                fileSource.ErrorOccurred += VideoSource_ErrorOccurred;
+                fileSource.ProgressChanged += FileVideoSource_ProgressChanged;
+                fileSource.PlaybackFinished += FileVideoSource_PlaybackFinished;
+                _videoSource = fileSource;
+
+                // ファイルモードではNDIへの送出は行わない(_ndiSenderは生成しない)。
+                _videoSource.Start();
+
+                System.Threading.Thread.Sleep(200);
+
+                int width = fileSource.ActualWidth > 0 ? fileSource.ActualWidth : 1920;
+                int height = fileSource.ActualHeight > 0 ? fileSource.ActualHeight : 1080;
+                double fps = fileSource.ActualFrameRate > 0 ? fileSource.ActualFrameRate : 30.0;
+
+                labelCaptureInfo.Text = $"ファイル: {width}x{height} @ {fps:F1} fps (開始 {startTime:yyyy/MM/dd HH:mm:ss})";
+                _captureFps = fps;
+                _captureHeight = height;
+
+                _meteorDetectionActive = checkBoxMeteorDetection.IsChecked == true;
+                if (_meteorDetectionActive)
+                {
+                    _meteorController.Exposure = comboBoxExposure.SelectedIndex + 1;
+                    _meteorController.OutputDirectory = string.IsNullOrWhiteSpace(textBoxMeteorOutputDir.Text)
+                        ? "meteor_output" : textBoxMeteorOutputDir.Text;
+                    _meteorController.Reset();
+                    labelMeteorCount.Text = "検出: 0件";
+                }
+                _overlayRenderer.Clear();
+
+                labelStatus.Text = "● 処理中";
+                statusBorder.Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(76, 175, 80)); // Green
+                buttonStart.IsEnabled = false;
+                buttonStop.IsEnabled = true;
+                checkBoxMeteorDetection.IsEnabled = false;
+                comboBoxExposure.IsEnabled = false;
+                buttonSelectOutputDir.IsEnabled = false;
+                radioModeCapture.IsEnabled = false;
+                radioModeFile.IsEnabled = false;
+                radioModeStreaming.IsEnabled = false;
+                buttonSelectSourceFile.IsEnabled = false;
+                datePickerStartTime.IsEnabled = false;
+                textBoxStartTimeOfDay.IsEnabled = false;
+
+                _frameCount = 0;
+                _lastFpsUpdate = DateTime.Now;
+                _lastPreviewUpdate = DateTime.MinValue;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"エラーが発生しました:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                Cleanup();
+                _isFileMode = false;
+            }
+        }
+
+        private void StartStreamingMode()
+        {
+            string url = textBoxRtspUrl.Text.Trim();
+            if (string.IsNullOrWhiteSpace(url) || !url.Contains("://"))
+            {
+                MessageBox.Show("RTSPのURLを入力してください (例: rtsp://192.168.1.215:8554/unicast)", "エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                _isFileMode = false;
+
+                var streamSource = new StreamingVideoCapture(url);
+                streamSource.FrameReceived += VideoSource_FrameReceived;
+                streamSource.ErrorOccurred += VideoSource_ErrorOccurred;
+                _videoSource = streamSource;
+
+                // RTSP接続(初回)はStart()内で同期的に行われ、失敗時は例外を投げる。
+                _videoSource.Start();
+
+                int width = streamSource.ActualWidth > 0 ? streamSource.ActualWidth : 1920;
+                int height = streamSource.ActualHeight > 0 ? streamSource.ActualHeight : 1080;
+                double declaredFps = streamSource.ActualFrameRate > 0 ? streamSource.ActualFrameRate : 30.0;
+
+                // キャプチャモードと同様、申告FPSを鵜呑みにせず実測して標準フレームレートに丸める。
+                double fps = MeasureInputFps(_videoSource, declaredFps);
+
+                // ストリーミングモードもキャプチャモードと同様にNDIへ送出する。
+                string ndiName = textBoxNDIName.Text;
+                if (string.IsNullOrWhiteSpace(ndiName))
+                    ndiName = "HDMI Capture";
+
+                _ndiSender = new NdiSender(ndiName, width, height, fps);
+                labelCaptureInfo.Text = $"ストリーミング: {width}x{height} @ {fps:F1} fps (申告値 {declaredFps:F1} fps)";
+                _captureFps = fps;
+                _captureHeight = height;
+
+                _meteorDetectionActive = checkBoxMeteorDetection.IsChecked == true;
+                if (_meteorDetectionActive)
+                {
+                    _meteorController.Exposure = comboBoxExposure.SelectedIndex + 1;
+                    _meteorController.OutputDirectory = string.IsNullOrWhiteSpace(textBoxMeteorOutputDir.Text)
+                        ? "meteor_output" : textBoxMeteorOutputDir.Text;
+                    _meteorController.Reset();
+                    labelMeteorCount.Text = "検出: 0件";
+                    _overlayRenderer.UpdateText("Start detection", height);
+                }
+                else
+                {
+                    _overlayRenderer.Clear();
+                }
+
+                labelStatus.Text = "● 動作中";
+                statusBorder.Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(76, 175, 80)); // Green
+                buttonStart.IsEnabled = false;
+                buttonStop.IsEnabled = true;
+                checkBoxMeteorDetection.IsEnabled = false;
+                comboBoxExposure.IsEnabled = false;
+                buttonSelectOutputDir.IsEnabled = false;
+                textBoxNDIName.IsReadOnly = true;
+                radioModeCapture.IsEnabled = false;
+                radioModeFile.IsEnabled = false;
+                radioModeStreaming.IsEnabled = false;
+                textBoxRtspUrl.IsEnabled = false;
 
                 _frameCount = 0;
                 _lastFpsUpdate = DateTime.Now;
@@ -307,6 +628,40 @@ namespace HDMICapture.App
 
         private void ButtonStop_Click(object sender, RoutedEventArgs e)
         {
+            StopAndResetUi();
+        }
+
+        // ファイルモードがファイル終端まで読み切って自然終了したときに、バックグラウンド
+        // (ファイル読み込み)スレッドから呼ばれる。露出時間に満たず残っている端数フレームを
+        // 同期処理してから、UIスレッドへ切り替えて後片付け・完了通知を行う。
+        private void FileVideoSource_PlaybackFinished(object? sender, EventArgs e)
+        {
+            if (_meteorDetectionActive)
+            {
+                try { _meteorController.Flush(synchronous: true); }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"検出処理の終端フラッシュに失敗: {ex.Message}"); }
+            }
+
+            Dispatcher.BeginInvoke(() =>
+            {
+                int count = _meteorController.DetectCount;
+                StopAndResetUi();
+                MessageBox.Show($"ファイル処理が完了しました。検出件数: {count}件", "完了", MessageBoxButton.OK, MessageBoxImage.Information);
+            });
+        }
+
+        private void FileVideoSource_ProgressChanged(object? sender, FileProcessProgressEventArgs e)
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                string pct = e.TotalFrames > 0 ? $" ({100.0 * e.CurrentFrame / e.TotalFrames:F1}%)" : "";
+                string total = e.TotalFrames > 0 ? e.TotalFrames.ToString("N0") : "?";
+                labelInfo.Text = $"処理中: {e.CurrentFrame:N0}/{total}フレーム{pct}  映像内時刻 {e.VideoTime:yyyy/MM/dd HH:mm:ss}";
+            });
+        }
+
+        private void StopAndResetUi()
+        {
             try
             {
                 _videoSource?.Stop();
@@ -315,7 +670,7 @@ namespace HDMICapture.App
                 // Clear preview
                 imagePreview.Source = null;
                 labelInfo.Text = "フレームレート: 0 FPS";
-                labelCaptureInfo.Text = "キャプチャー: 待機中";
+                labelCaptureInfo.Text = "映像ソース: 待機中";
 
                 labelStatus.Text = "● 停止中";
                 statusBorder.Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(244, 67, 54)); // Red
@@ -327,7 +682,15 @@ namespace HDMICapture.App
                 comboBoxExposure.IsEnabled = true;
                 buttonSelectOutputDir.IsEnabled = true;
                 textBoxNDIName.IsReadOnly = false;
+                radioModeCapture.IsEnabled = true;
+                radioModeFile.IsEnabled = true;
+                radioModeStreaming.IsEnabled = true;
+                buttonSelectSourceFile.IsEnabled = true;
+                datePickerStartTime.IsEnabled = true;
+                textBoxStartTimeOfDay.IsEnabled = true;
+                textBoxRtspUrl.IsEnabled = true;
 
+                _isFileMode = false;
                 _meteorDetectionActive = false;
                 _meteorController.Reset();
                 _overlayRenderer.Clear();
@@ -349,9 +712,9 @@ namespace HDMICapture.App
 
             _frameCount++;
 
-            // Update FPS display
+            // Update FPS display (ファイルモードではlabelInfoは処理進捗表示に使うため対象外)
             var now = DateTime.Now;
-            if ((now - _lastFpsUpdate).TotalSeconds >= 1.0)
+            if (!_isFileMode && (now - _lastFpsUpdate).TotalSeconds >= 1.0)
             {
                 // BeginInvokeは非同期実行のため、_frameCountをそのまま参照すると
                 // ラムダが実際に実行される頃には下でリセットされた後の値になってしまう。
@@ -368,15 +731,19 @@ namespace HDMICapture.App
                 _lastFpsUpdate = now;
             }
 
-            // 流星検出(ONの場合のみ)。重い処理はコントローラ内でTask.Run実行するため、
-            // ここではフレームのコピー渡しのみで、キャプチャループをブロックしない。
+            // 流星検出(ONの場合のみ)。ライブキャプチャでは重い処理をコントローラ内で
+            // Task.Run実行し、キャプチャループをブロックしない。ファイルモードでは逆に
+            // synchronous:trueで呼び出し元(ファイル読み込みスレッド)を検出処理の完了まで
+            // 待たせることで、ファイルを読み進める速度を検出処理の速度に自然に合わせ、
+            // 大きなファイルでも未処理フレームがメモリ上に溜まり続けるのを防ぐ。
             // オーバーレイ焼き込みより前に行う: 検出アルゴリズムには
             // オーバーレイの写っていない生のフレームを渡すため。
             if (_meteorDetectionActive && e.FrameData.Length > 0)
             {
                 try
                 {
-                    _meteorController.AddFrame(e.FrameData, e.Width, e.Height, _captureFps);
+                    var frameTime = new DateTime(e.Timestamp);
+                    _meteorController.AddFrame(e.FrameData, e.Width, e.Height, _captureFps, frameTime, synchronous: _isFileMode);
                 }
                 catch (Exception ex)
                 {
@@ -405,9 +772,19 @@ namespace HDMICapture.App
             }
 
             // Update preview
+            // ファイルモードは実時間を無視して高速に読み進めるため、毎フレームUIスレッドへ
+            // 転送するとDispatcherキューが詰まる。プレビューは200ms間隔に間引く
+            // (検出処理自体は間引かず全フレームに対して行う)。
             try
             {
-                if (e.Width > 0 && e.Height > 0 && e.FrameData.Length > 0)
+                bool updatePreviewNow = true;
+                if (_isFileMode)
+                {
+                    updatePreviewNow = (now - _lastPreviewUpdate).TotalMilliseconds >= 200;
+                    if (updatePreviewNow) _lastPreviewUpdate = now;
+                }
+
+                if (updatePreviewNow && e.Width > 0 && e.Height > 0 && e.FrameData.Length > 0)
                 {
                     Dispatcher.BeginInvoke(() =>
                     {
