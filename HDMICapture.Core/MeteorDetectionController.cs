@@ -47,6 +47,11 @@ namespace HDMICapture.Core
         public HersheyFonts TimecodeFontFace { get; set; } = HersheyFonts.HersheySimplex;
         public double TimecodeFontScaleMultiplier { get; set; } = 1.0;
 
+        // falseにすると、保存する検出動画への日時タイムコードの焼き込みを行わない。
+        // ストリーミングモード(RTSP)では映像ソース側に既に時刻が写り込んでいることが多く、
+        // 重複表示を避けたい場合に使う。
+        public bool DrawTimecodeOverlay { get; set; } = true;
+
         public event EventHandler<MeteorDetectedEventArgs>? MeteorDetected;
         public event EventHandler<string>? ErrorOccurred;
 
@@ -225,9 +230,12 @@ namespace HDMICapture.Core
             int framesPerSecond = Math.Max(1, (int)Math.Round(_fps));
             for (int i = 0; i < frames.Count; i++)
             {
-                DateTime frameTime = startTime.AddSeconds(i / _fps);
-                int frameNumber = i % framesPerSecond;
-                DrawTimecode(frames[i], frameTime, frameNumber);
+                if (DrawTimecodeOverlay)
+                {
+                    DateTime frameTime = startTime.AddSeconds(i / _fps);
+                    int frameNumber = i % framesPerSecond;
+                    DrawTimecode(frames[i], frameTime, frameNumber);
+                }
                 writer.Write(frames[i]);
             }
         }

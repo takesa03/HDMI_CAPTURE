@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using HDMICapture.Core;
@@ -12,6 +14,32 @@ namespace HDMICapture.App
 {
     public partial class MainWindow : Window
     {
+        // タイトルバー(OS描画部分)をダークモード化するためのDWM API。
+        // WPF自体にはタイトルバーの配色を変える管理APIが無いため、Win32を直接呼ぶ。
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int valueSize);
+
+        // Windows 11および一部のWindows 10(1809+)ビルドでの属性値。ビルドにより
+        // 20/19のどちらが有効か異なることがあるため両方試す。
+        private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+        private const int DWMWA_USE_IMMERSIVE_DARK_MODE_OLD = 19;
+
+        protected override void OnSourceInitialized(EventArgs e)
+        {
+            base.OnSourceInitialized(e);
+            try
+            {
+                var hwnd = new WindowInteropHelper(this).Handle;
+                int enabled = 1;
+                if (DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref enabled, sizeof(int)) != 0)
+                    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_OLD, ref enabled, sizeof(int));
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"タイトルバーのダークモード化に失敗: {ex.Message}");
+            }
+        }
+
         private IVideoSource? _videoSource;
         private NdiSender? _ndiSender;
         private AudioCapture? _audioCapture;
@@ -318,6 +346,7 @@ namespace HDMICapture.App
             try
             {
                 _isFileMode = false;
+                _meteorController.DrawTimecodeOverlay = true;
                 string deviceName = comboBoxDevices.SelectedItem.ToString() ?? "Unknown";
 
                 // Initialize video capture (using OpenCV backend)
@@ -492,6 +521,7 @@ namespace HDMICapture.App
             try
             {
                 _isFileMode = true;
+                _meteorController.DrawTimecodeOverlay = true;
 
                 var fileSource = new FileVideoCapture(path, startTime);
                 fileSource.FrameReceived += VideoSource_FrameReceived;
@@ -562,6 +592,9 @@ namespace HDMICapture.App
             try
             {
                 _isFileMode = false;
+                // ストリーミングモード(RTSP)は映像ソース側に既に時刻が写り込んでいることが
+                // 多いため、検出動画への日時タイムコードの焼き込みは行わない。
+                _meteorController.DrawTimecodeOverlay = false;
 
                 var streamSource = new StreamingVideoCapture(url);
                 streamSource.FrameReceived += VideoSource_FrameReceived;
