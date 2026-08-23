@@ -62,6 +62,10 @@ namespace HDMICapture.App
         private List<MeteorDetectionRecord> _reviewRecords = new();
         private MeteorDetectionRecord? _reviewSelected;
 
+        private Window? _enlargedPreviewWindow;
+        private Image? _enlargedPreviewImage;
+        private MediaElement? _enlargedPreviewMedia;
+
         public MainWindow()
         {
             // InitializeComponent()はXAML上のText/IsChecked/SelectedIndex等の既定値を
@@ -88,6 +92,9 @@ namespace HDMICapture.App
             {
                 if (!string.IsNullOrWhiteSpace(_appSettings.MeteorOutputDirectory))
                     textBoxMeteorOutputDir.Text = _appSettings.MeteorOutputDirectory;
+
+                if (!string.IsNullOrWhiteSpace(_appSettings.ReviewFolder))
+                    _reviewFolder = _appSettings.ReviewFolder;
 
                 if (!string.IsNullOrWhiteSpace(_appSettings.NdiName))
                     textBoxNDIName.Text = _appSettings.NdiName;
@@ -188,18 +195,32 @@ namespace HDMICapture.App
         {
             // XAML解析中にIsChecked="True"の初期適用で発火することがあるため、
             // まだ生成されていないコントロールへのアクセスを避けるガードを入れる。
-            if (panelFileSource == null || panelNdiName == null || panelDeviceSelect == null || panelRtspSource == null) return;
+            if (panelFileSource == null || panelNdiName == null || panelDeviceSelect == null || panelRtspSource == null
+                || panelAtomCamSource == null) return;
 
             bool fileMode = radioModeFile.IsChecked == true;
             bool streamingMode = radioModeStreaming.IsChecked == true;
-            bool captureMode = !fileMode && !streamingMode;
+            bool atomCamMode = radioModeAtomCam.IsChecked == true;
+            bool captureMode = !fileMode && !streamingMode && !atomCamMode;
 
             // NDI出力はキャプチャモード・ストリーミングモードの両方で使うため、
-            // ファイルモードのときだけ隠す。
-            panelNdiName.Visibility = fileMode ? Visibility.Collapsed : Visibility.Visible;
+            // ファイルモード・ATOMCamモードのときだけ隠す。
+            panelNdiName.Visibility = (fileMode || atomCamMode) ? Visibility.Collapsed : Visibility.Visible;
             panelDeviceSelect.Visibility = captureMode ? Visibility.Visible : Visibility.Collapsed;
             panelFileSource.Visibility = fileMode ? Visibility.Visible : Visibility.Collapsed;
             panelRtspSource.Visibility = streamingMode ? Visibility.Visible : Visibility.Collapsed;
+            panelAtomCamSource.Visibility = atomCamMode ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void ButtonSelectAtomCamFolder_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new Microsoft.Win32.OpenFolderDialog
+            {
+                Title = "ATOM Camの録画フォルダ(yyyyMMddフォルダの親)を選択"
+            };
+
+            if (dlg.ShowDialog() == true)
+                textBoxAtomCamFolder.Text = dlg.FolderName;
         }
 
         private void ButtonSelectSourceFile_Click(object sender, RoutedEventArgs e)
@@ -331,6 +352,8 @@ namespace HDMICapture.App
                 StartFileMode();
             else if (radioModeStreaming.IsChecked == true)
                 StartStreamingMode();
+            else if (radioModeAtomCam.IsChecked == true)
+                StartAtomCamMode();
             else
                 StartCaptureMode();
         }
@@ -580,6 +603,91 @@ namespace HDMICapture.App
             }
         }
 
+        // ATOM Camの録画フォルダ(yyyyMMdd/hh/mm.mp4)配下を、時刻順に連続した映像として
+        // 読み進めながら流星検出を行う。ファイルモードと同様に実時間を待たず高速に
+        // 読み進めるため_isFileMode=trueとして同期処理・プレビュー間引きの経路を共有する。
+        // 一方で、RTSPモードと同じく映像内に時刻がすでに写り込んでいるため、
+        // 検出動画への日時タイムコードの焼き込みは行わない。
+        private void StartAtomCamMode()
+        {
+            string folder = textBoxAtomCamFolder.Text;
+            if (string.IsNullOrWhiteSpace(folder) || !System.IO.Directory.Exists(folder))
+            {
+                MessageBox.Show("ATOM Camの録画フォルダを選択してください", "エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                _isFileMode = true;
+                _meteorController.DrawTimecodeOverlay = false;
+
+                var atomSource = new AtomCamVideoCapture(folder);
+                atomSource.FrameReceived += VideoSource_FrameReceived;
+                atomSource.ErrorOccurred += VideoSource_ErrorOccurred;
+                atomSource.ProgressChanged += AtomCamVideoSource_ProgressChanged;
+                atomSource.PlaybackFinished += FileVideoSource_PlaybackFinished;
+                _videoSource = atomSource;
+
+                // ATOMCamモードでもNDIへの送出は行わない(_ndiSenderは生成しない)。
+                _videoSource.Start();
+
+                System.Threading.Thread.Sleep(200);
+
+                int width = atomSource.ActualWidth > 0 ? atomSource.ActualWidth : 1920;
+                int height = atomSource.ActualHeight > 0 ? atomSource.ActualHeight : 1080;
+                double fps = atomSource.ActualFrameRate > 0 ? atomSource.ActualFrameRate : 15.0;
+
+                labelCaptureInfo.Text = $"ATOM Cam: {width}x{height} @ {fps:F1} fps ({atomSource.FileCount}ファイル)";
+                _captureFps = fps;
+                _captureHeight = height;
+
+                _meteorDetectionActive = checkBoxMeteorDetection.IsChecked == true;
+                if (_meteorDetectionActive)
+                {
+                    _meteorController.Exposure = comboBoxExposure.SelectedIndex + 1;
+                    _meteorController.OutputDirectory = string.IsNullOrWhiteSpace(textBoxMeteorOutputDir.Text)
+                        ? "meteor_output" : textBoxMeteorOutputDir.Text;
+                    _meteorController.Reset();
+                    labelMeteorCount.Text = "検出: 0件";
+                }
+                _overlayRenderer.Clear();
+
+                labelStatus.Text = "● 処理中";
+                statusBorder.Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(76, 175, 80)); // Green
+                buttonStart.IsEnabled = false;
+                buttonStop.IsEnabled = true;
+                checkBoxMeteorDetection.IsEnabled = false;
+                comboBoxExposure.IsEnabled = false;
+                buttonSelectOutputDir.IsEnabled = false;
+                radioModeCapture.IsEnabled = false;
+                radioModeFile.IsEnabled = false;
+                radioModeStreaming.IsEnabled = false;
+                radioModeAtomCam.IsEnabled = false;
+                buttonSelectAtomCamFolder.IsEnabled = false;
+
+                _frameCount = 0;
+                _lastFpsUpdate = DateTime.Now;
+                _lastPreviewUpdate = DateTime.MinValue;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"エラーが発生しました:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                Cleanup();
+                _isFileMode = false;
+            }
+        }
+
+        private void AtomCamVideoSource_ProgressChanged(object? sender, AtomCamProgressEventArgs e)
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                string pct = e.FileCount > 0 ? $" ({100.0 * e.FileIndex / e.FileCount:F1}%)" : "";
+                labelInfo.Text = $"処理中: ファイル {e.FileIndex}/{e.FileCount}{pct}  " +
+                    $"映像内時刻 {e.VideoTime:yyyy/MM/dd HH:mm:ss}  ({System.IO.Path.GetFileName(e.CurrentFile)})";
+            });
+        }
+
         private void StartStreamingMode()
         {
             string url = textBoxRtspUrl.Text.Trim();
@@ -718,10 +826,12 @@ namespace HDMICapture.App
                 radioModeCapture.IsEnabled = true;
                 radioModeFile.IsEnabled = true;
                 radioModeStreaming.IsEnabled = true;
+                radioModeAtomCam.IsEnabled = true;
                 buttonSelectSourceFile.IsEnabled = true;
                 datePickerStartTime.IsEnabled = true;
                 textBoxStartTimeOfDay.IsEnabled = true;
                 textBoxRtspUrl.IsEnabled = true;
+                buttonSelectAtomCamFolder.IsEnabled = true;
 
                 _isFileMode = false;
                 _meteorDetectionActive = false;
@@ -900,8 +1010,10 @@ namespace HDMICapture.App
                 return;
             }
 
-            string folder = string.IsNullOrWhiteSpace(textBoxMeteorOutputDir.Text)
-                ? "meteor_output" : textBoxMeteorOutputDir.Text;
+            string folder = !string.IsNullOrWhiteSpace(_reviewFolder)
+                ? _reviewFolder
+                : string.IsNullOrWhiteSpace(textBoxMeteorOutputDir.Text)
+                    ? "meteor_output" : textBoxMeteorOutputDir.Text;
 
             borderReviewPanel.Visibility = Visibility.Visible;
             LoadReviewFolder(folder);
@@ -916,7 +1028,12 @@ namespace HDMICapture.App
         {
             var dlg = new Microsoft.Win32.OpenFolderDialog { Title = "検出リストのあるフォルダを選択" };
             if (dlg.ShowDialog() == true)
+            {
                 LoadReviewFolder(dlg.FolderName);
+
+                _appSettings.ReviewFolder = dlg.FolderName;
+                AppConfig.Save(_appSettings);
+            }
         }
 
         private void ButtonReviewRefresh_Click(object sender, RoutedEventArgs e)
@@ -1015,6 +1132,8 @@ namespace HDMICapture.App
                     imageReview.Source = bmp;
                 }
             }
+
+            UpdateEnlargedPreview();
         }
 
         private void MediaReview_MediaOpened(object sender, RoutedEventArgs e)
@@ -1039,6 +1158,104 @@ namespace HDMICapture.App
                 mediaReview.Source = null;
             }
             catch { }
+        }
+
+        // プレビュー(画像/動画)をクリックした際に、内容確認用として同じものを
+        // 大きな別ウィンドウで一時的に表示する。既に開いていれば再利用して
+        // 最新の選択内容に更新する(ウィンドウが増殖しないように)。
+        private void BorderReviewPreview_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (_reviewSelected == null) return;
+
+            if (_enlargedPreviewWindow == null)
+            {
+                _enlargedPreviewImage = new Image { Stretch = Stretch.Uniform };
+                _enlargedPreviewMedia = new MediaElement
+                {
+                    Stretch = Stretch.Uniform,
+                    LoadedBehavior = MediaState.Manual,
+                    UnloadedBehavior = MediaState.Manual,
+                    Visibility = Visibility.Collapsed
+                };
+                _enlargedPreviewMedia.MediaEnded += (s, ev) =>
+                {
+                    _enlargedPreviewMedia.Position = TimeSpan.Zero;
+                    _enlargedPreviewMedia.Play();
+                };
+
+                var grid = new Grid { Background = Brushes.Black };
+                grid.Children.Add(_enlargedPreviewImage);
+                grid.Children.Add(_enlargedPreviewMedia);
+
+                var workArea = SystemParameters.WorkArea;
+                _enlargedPreviewWindow = new Window
+                {
+                    Title = "プレビュー拡大",
+                    Background = Brushes.Black,
+                    Content = grid,
+                    Owner = this,
+                    Width = workArea.Width * 0.8,
+                    Height = workArea.Height * 0.8,
+                    WindowStartupLocation = WindowStartupLocation.CenterOwner
+                };
+                _enlargedPreviewWindow.KeyDown += (s, ev) =>
+                {
+                    if (ev.Key == Key.Escape) _enlargedPreviewWindow!.Close();
+                };
+                _enlargedPreviewWindow.Closed += (s, ev) =>
+                {
+                    _enlargedPreviewMedia?.Stop();
+                    _enlargedPreviewWindow = null;
+                    _enlargedPreviewImage = null;
+                    _enlargedPreviewMedia = null;
+                };
+
+                _enlargedPreviewWindow.Show();
+            }
+            else
+            {
+                _enlargedPreviewWindow.Activate();
+            }
+
+            UpdateEnlargedPreview();
+        }
+
+        // メイン側のプレビュー(imageReview/mediaReview)の表示内容を、拡大ウィンドウ側にも反映する。
+        private void UpdateEnlargedPreview()
+        {
+            if (_enlargedPreviewWindow == null || _enlargedPreviewImage == null || _enlargedPreviewMedia == null) return;
+            if (_reviewSelected == null) return;
+
+            _enlargedPreviewMedia.Stop();
+
+            if (radioViewMovie.IsChecked == true)
+            {
+                _enlargedPreviewImage.Visibility = Visibility.Collapsed;
+                _enlargedPreviewMedia.Visibility = Visibility.Visible;
+
+                if (System.IO.File.Exists(_reviewSelected.MoviePath))
+                {
+                    _enlargedPreviewMedia.Source = new Uri(_reviewSelected.MoviePath, UriKind.Absolute);
+                    _enlargedPreviewMedia.Play();
+                }
+            }
+            else
+            {
+                _enlargedPreviewMedia.Visibility = Visibility.Collapsed;
+                _enlargedPreviewImage.Visibility = Visibility.Visible;
+
+                string path = radioViewDiff.IsChecked == true ? _reviewSelected.DiffPath : _reviewSelected.PhotoPath;
+                if (System.IO.File.Exists(path))
+                {
+                    var bmp = new BitmapImage();
+                    bmp.BeginInit();
+                    bmp.CacheOption = BitmapCacheOption.OnLoad;
+                    bmp.UriSource = new Uri(path, UriKind.Absolute);
+                    bmp.EndInit();
+                    bmp.Freeze();
+                    _enlargedPreviewImage.Source = bmp;
+                }
+            }
         }
 
         private void ButtonMarkFalsePositive_Click(object sender, RoutedEventArgs e)

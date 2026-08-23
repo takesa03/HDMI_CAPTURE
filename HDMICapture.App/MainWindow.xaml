@@ -112,6 +112,8 @@
                     <RadioButton Name="radioModeStreaming" Content="ストリーミングモード" GroupName="sourceMode"
                                  Checked="SourceMode_Changed" VerticalAlignment="Center" Margin="0,0,16,0"/>
                     <RadioButton Name="radioModeFile" Content="ファイルモード" GroupName="sourceMode"
+                                 Checked="SourceMode_Changed" VerticalAlignment="Center" Margin="0,0,16,0"/>
+                    <RadioButton Name="radioModeAtomCam" Content="ATOMCamモード" GroupName="sourceMode"
                                  Checked="SourceMode_Changed" VerticalAlignment="Center"/>
                 </StackPanel>
             </StackPanel>
@@ -137,9 +139,9 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="150"/>
-                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="225"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
@@ -165,7 +167,8 @@
                         <RadioButton Name="radioViewMovie" Content="動画" GroupName="reviewViewMode" Checked="ViewMode_Changed" FontSize="11" VerticalAlignment="Center"/>
                     </StackPanel>
 
-                    <Border Grid.Row="4" BorderBrush="#4A4A4A" BorderThickness="1" Background="Black">
+                    <Border Grid.Row="4" BorderBrush="#4A4A4A" BorderThickness="1" Background="Black"
+                            Cursor="Hand" ToolTip="クリックで拡大表示" MouseLeftButtonDown="BorderReviewPreview_MouseLeftButtonDown">
                         <Grid>
                             <Image Name="imageReview" Stretch="Uniform"/>
                             <MediaElement Name="mediaReview" Visibility="Collapsed" Stretch="Uniform"
@@ -211,6 +214,14 @@
                 <Label Padding="0" VerticalAlignment="Center" FontSize="12" Margin="12,0,0,0">開始日時:</Label>
                 <DatePicker Name="datePickerStartTime" Width="112" Height="28" Margin="5,0,0,0" VerticalAlignment="Center"/>
                 <TextBox Name="textBoxStartTimeOfDay" Width="66" Height="28" Text="00:00:00" Padding="5" Margin="4,0,0,0" VerticalAlignment="Center"/>
+            </StackPanel>
+
+            <!-- 録画フォルダ(ATOMCamモード) -->
+            <StackPanel Name="panelAtomCamSource" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed">
+                <Label Padding="0" VerticalAlignment="Center" FontSize="12">録画フォルダ:</Label>
+                <TextBox Name="textBoxAtomCamFolder" Width="320" Height="28" Padding="5" Margin="5,0,0,0" VerticalAlignment="Center" IsReadOnly="True"
+                         ToolTip="yyyyMMddフォルダが並ぶ親フォルダを選択します(配下のyyyyMMdd/hh/mm.mp4を日時順に処理します)"/>
+                <Button Name="buttonSelectAtomCamFolder" Content="選択..." Width="60" Height="28" Click="ButtonSelectAtomCamFolder_Click" Margin="5,0,0,0" Padding="0"/>
             </StackPanel>
 
             <!-- RTSP URL(ストリーミングモード) -->

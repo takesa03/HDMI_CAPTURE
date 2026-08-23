@@ -17,6 +17,7 @@ namespace HDMICapture.App
         public string OverlayFontFace { get; set; } = "HersheySimplex";
         public bool MeteorDetectionEnabled { get; set; } = true;
         public string? RtspUrl { get; set; }
+        public string? ReviewFolder { get; set; }
     }
 
     public static class AppConfig
