@@ -77,6 +77,11 @@ namespace HDMICapture.App
             _isRestoringSettings = true;
 
             InitializeComponent();
+
+            var ver = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+            if (ver != null)
+                Title = $"{Title}  v{ver.Major}.{ver.Minor}.{ver.Build}.{ver.Revision}";
+
             _ = RefreshDevicesAsync();
 
             _meteorController.MeteorDetected += MeteorController_MeteorDetected;

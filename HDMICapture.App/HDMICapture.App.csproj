@@ -19,4 +19,28 @@
     <Resource Include="AppIcon.ico" />
   </ItemGroup>
 
+  <!-- ビルドのたびにリビジョン(4桁目)を1つ増やす。Major.Minor.Buildはここを直接編集して手動管理する。
+       revision.txtにカウンタを保持し、ビルド前に読み込み・加算・書き戻しを行う。 -->
+  <PropertyGroup>
+    <VersionMajorMinorBuild>1.0.0</VersionMajorMinorBuild>
+    <RevisionFile>$(MSBuildProjectDirectory)\revision.txt</RevisionFile>
+  </PropertyGroup>
+
+  <Target Name="IncrementRevision" BeforeTargets="BeforeBuild">
+    <ReadLinesFromFile File="$(RevisionFile)" Condition="Exists('$(RevisionFile)')">
+      <Output TaskParameter="Lines" ItemName="RevisionLines" />
+    </ReadLinesFromFile>
+    <PropertyGroup>
+      <CurrentRevision Condition="'@(RevisionLines)' != ''">@(RevisionLines)</CurrentRevision>
+      <CurrentRevision Condition="'$(CurrentRevision)' == ''">0</CurrentRevision>
+      <NewRevision>$([MSBuild]::Add($(CurrentRevision), 1))</NewRevision>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(RevisionFile)" Lines="$(NewRevision)" Overwrite="true" />
+    <PropertyGroup>
+      <AssemblyVersion>$(VersionMajorMinorBuild).$(NewRevision)</AssemblyVersion>
+      <FileVersion>$(VersionMajorMinorBuild).$(NewRevision)</FileVersion>
+      <InformationalVersion>$(VersionMajorMinorBuild).$(NewRevision)</InformationalVersion>
+    </PropertyGroup>
+  </Target>
+
 </Project>
