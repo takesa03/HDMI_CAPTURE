@@ -8,10 +8,15 @@
     <Nullable>enable</Nullable>
     <UseWPF>true</UseWPF>
     <StartupUri>MainWindow.xaml</StartupUri>
+    <ApplicationIcon>AppIcon.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\HDMICapture.Core\HDMICapture.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="AppIcon.ico" />
   </ItemGroup>
 
 </Project>
