@@ -1061,6 +1061,8 @@ namespace HDMICapture.App
                 .Select((r, i) => $"No.{i + 1}  {r.ExposureStartTime:yyyy/MM/dd HH:mm:ss}")
                 .ToList();
 
+            buttonExportNumbered.IsEnabled = _reviewRecords.Count > 0;
+
             _reviewSelected = null;
             StopMovie();
             UpdateReviewView();
@@ -1099,6 +1101,7 @@ namespace HDMICapture.App
 
             imageReview.Source = null;
             StopMovie();
+            if (buttonEditMask != null) buttonEditMask.IsEnabled = false;
 
             if (_reviewSelected == null) return;
 
@@ -1136,6 +1139,9 @@ namespace HDMICapture.App
                     bmp.Freeze();
                     imageReview.Source = bmp;
                 }
+
+                if (buttonEditMask != null)
+                    buttonEditMask.IsEnabled = radioViewDiff.IsChecked == true && imageReview.Source != null;
             }
 
             UpdateEnlargedPreview();
@@ -1260,6 +1266,71 @@ namespace HDMICapture.App
                     bmp.Freeze();
                     _enlargedPreviewImage.Source = bmp;
                 }
+            }
+        }
+
+        // 現在選択中の差分画像(赤線入り)から赤色部分を抽出し、現在のマスク画像
+        // (未設定なら黒画像)に白色で加算した新しいマスク画像を作る。
+        // 保存後、そのままそれを流星検出用の新しいマスクとして適用する。
+        private void ButtonEditMask_Click(object sender, RoutedEventArgs e)
+        {
+            if (_reviewSelected == null || !System.IO.File.Exists(_reviewSelected.DiffPath))
+            {
+                MessageBox.Show("差分画像を表示した状態で実行してください。", "エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var dlg = new Microsoft.Win32.SaveFileDialog
+            {
+                Title = "マスク画像を保存",
+                Filter = "PNG画像|*.png|すべてのファイル|*.*",
+                DefaultExt = ".png",
+                FileName = "mask.png"
+            };
+
+            string? initialDir = !string.IsNullOrWhiteSpace(_appSettings.MaskFilePath)
+                ? System.IO.Path.GetDirectoryName(_appSettings.MaskFilePath)
+                : _reviewFolder;
+            if (!string.IsNullOrWhiteSpace(initialDir))
+                dlg.InitialDirectory = initialDir;
+
+            if (dlg.ShowDialog() == true)
+            {
+                try
+                {
+                    MaskEditor.CreateAugmentedMask(_appSettings.MaskFilePath, _reviewSelected.DiffPath, dlg.FileName);
+
+                    _meteorController.LoadMask(dlg.FileName);
+                    labelMaskStatus.Text = System.IO.Path.GetFileName(dlg.FileName);
+
+                    _appSettings.MaskFilePath = dlg.FileName;
+                    AppConfig.Save(_appSettings);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"マスクの作成に失敗しました:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+        }
+
+        // 検出一覧の全データについて、一覧表示と同じ並び順(No.1, No.2, ...)の番号を
+        // 比較明合成・差分・動画に焼き込み、「_num」サブフォルダへ書き出す設定ダイアログを開く。
+        private void ButtonExportNumbered_Click(object sender, RoutedEventArgs e)
+        {
+            if (_reviewFolder == null || _reviewRecords.Count == 0)
+            {
+                MessageBox.Show("出力対象がありません。", "エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                var window = new NumberedExportWindow(_reviewRecords, _reviewFolder, _appSettings) { Owner = this };
+                window.ShowDialog();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"採番出力ダイアログを開けませんでした:\n{ex}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 

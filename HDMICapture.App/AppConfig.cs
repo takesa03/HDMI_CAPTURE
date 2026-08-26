@@ -18,6 +18,11 @@ namespace HDMICapture.App
         public bool MeteorDetectionEnabled { get; set; } = true;
         public string? RtspUrl { get; set; }
         public string? ReviewFolder { get; set; }
+
+        public string NumberedExportFontFamily { get; set; } = "Segoe UI";
+        public double NumberedExportFontScale { get; set; } = 1.0;
+        public int NumberedExportMarginX { get; set; } = 20;
+        public int NumberedExportMarginY { get; set; } = 20;
     }
 
     public static class AppConfig

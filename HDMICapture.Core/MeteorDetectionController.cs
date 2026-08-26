@@ -177,7 +177,7 @@ namespace HDMICapture.Core
                         // 露出(バッファリング)を開始した時刻を使う。
                         Directory.CreateDirectory(OutputDirectory);
                         string timestamp = window.StartTime.ToString("yyyyMMdd_HHmmss");
-                        string jpgPath = Path.Combine(OutputDirectory, timestamp + ".jpg");
+                        string jpgPath = Path.Combine(OutputDirectory, timestamp + "_synth.jpg");
                         Cv2.ImWrite(jpgPath, composite);
 
                         // 差分画像には、検出された線分(流星と判定した位置)を赤線で重ねて保存する。
