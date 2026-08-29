@@ -100,3 +100,7 @@ dotnet run
 - `HDMICapture.Core.csproj`はNDI SDKの.NETラッパー(NDILibDotNet2)をプロジェクト参照しているため、ビルドにはこのラッパーが別途必要。
 - `HDMICapture.Core`内の`DirectShowCapture`/`DirectShowDeviceEnumerator`/`DirectShowInterop`は、現在の`MainWindow`では使用されていない(HDMIキャプチャはMSMFバックエンドの`OpenCvVideoCapture`を使用)。
 - 流星と飛行機・人工衛星は見かけの移動速度が近い場合があり、アルゴリズムだけでは区別しきれないことがある。最終的な判定は検出レビューパネルでの目視確認・誤検知削除を前提としている。
+
+## ライセンス
+
+このプロジェクトは[MITライセンス](LICENSE)のもとで公開されています。
