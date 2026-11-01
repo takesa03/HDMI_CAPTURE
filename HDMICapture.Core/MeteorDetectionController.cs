@@ -10,6 +10,9 @@ namespace HDMICapture.Core
     {
         public int Count { get; set; }
         public MeteorDetectionRecord Record { get; set; } = new();
+
+        // 連続した露出で検出が続いており、流星ではなく飛行機の可能性が高い。
+        public bool IsAircraftSuspected { get; set; }
     }
 
     // ライブキャプチャのBGRAフレームを受け取り、露出時間分バッファリングして
@@ -52,7 +55,25 @@ namespace HDMICapture.Core
         // 重複表示を避けたい場合に使う。
         public bool DrawTimecodeOverlay { get; set; } = true;
 
+        // 飛行機や人工衛星は複数の露出ウィンドウにまたがって映り続けるため、検出が
+        // この数以上の連続した露出で続いた場合は、飛行機の可能性が高いとみなす。
+        public const int AircraftStreakThreshold = 3;
+
+        // 次の検出までの露出開始時刻の間隔が、露出時間のこの倍率以内なら「連続」とみなす。
+        // (フレーム単位の区切りで、ウィンドウの長さが露出時間より少し長くなることがあるため余裕を持たせる)
+        public const double ConsecutiveGapFactor = 1.5;
+
+        public static bool AreConsecutive(DateTime previousStart, DateTime nextStart, double exposureSeconds) =>
+            (nextStart - previousStart).TotalSeconds <= exposureSeconds * ConsecutiveGapFactor;
+
+        private readonly object _streakLock = new();
+        private int _streak;
+        private DateTime _lastDetectedStart = DateTime.MinValue;
+
         public event EventHandler<MeteorDetectedEventArgs>? MeteorDetected;
+
+        // 飛行機の疑いが出ていた状態で、連続性が途切れたときに発火する。
+        public event EventHandler? AircraftSuspicionCleared;
         public event EventHandler<string>? ErrorOccurred;
 
         public void LoadMask(string path) => _detector.LoadMask(path);
@@ -66,7 +87,44 @@ namespace HDMICapture.Core
                 foreach (var m in _window.Frames) m.Dispose();
                 _window = new FrameWindow();
             }
+            lock (_streakLock)
+            {
+                _streak = 0;
+                _lastDetectedStart = DateTime.MinValue;
+            }
             _detectCount = 0;
+        }
+
+        // 検出があったウィンドウを登録し、現在の連続数を返す。
+        // ウィンドウの処理は別スレッドで行うため、完了順が前後した古いウィンドウは無視する。
+        private int RegisterDetection(DateTime windowStart)
+        {
+            lock (_streakLock)
+            {
+                if (_streak > 0 && windowStart <= _lastDetectedStart) return _streak;
+
+                if (_streak > 0 && AreConsecutive(_lastDetectedStart, windowStart, Exposure))
+                    _streak++;
+                else
+                    _streak = 1;
+
+                _lastDetectedStart = windowStart;
+                return _streak;
+            }
+        }
+
+        // 検出が無かったウィンドウを通知する。直近の検出より後のウィンドウなら連続性は途切れる。
+        private void RegisterNoDetection(DateTime windowStart)
+        {
+            bool wasSuspected;
+            lock (_streakLock)
+            {
+                if (_streak == 0 || windowStart <= _lastDetectedStart) return;
+                wasSuspected = _streak >= AircraftStreakThreshold;
+                _streak = 0;
+            }
+
+            if (wasSuspected) AircraftSuspicionCleared?.Invoke(this, EventArgs.Empty);
         }
 
         // BGRAのフレームデータを追加する。露出時間分たまったら検出処理を行う。
@@ -168,10 +226,13 @@ namespace HDMICapture.Core
 
                     foreach (var d in diffs) d.Dispose();
 
+                    if (!isMeteor) RegisterNoDetection(window.StartTime);
+
                     if (isMeteor)
                     {
                         var now = DateTime.Now;
                         _detectCount++;
+                        bool aircraftSuspected = RegisterDetection(window.StartTime) >= AircraftStreakThreshold;
 
                         // ファイル名・記録上の「検出日時」は処理完了時刻(now)ではなく
                         // 露出(バッファリング)を開始した時刻を使う。
@@ -199,14 +260,16 @@ namespace HDMICapture.Core
                             DetectedTime = now,
                             PhotoPath = jpgPath,
                             DiffPath = diffPath,
-                            MoviePath = mp4Path
+                            MoviePath = mp4Path,
+                            ExposureSeconds = Exposure
                         };
                         MeteorDetectionListStore.Append(OutputDirectory, record);
 
                         MeteorDetected?.Invoke(this, new MeteorDetectedEventArgs
                         {
                             Count = _detectCount,
-                            Record = record
+                            Record = record,
+                            IsAircraftSuspected = aircraftSuspected
                         });
                     }
                 }

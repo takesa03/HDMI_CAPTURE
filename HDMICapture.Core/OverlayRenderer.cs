@@ -16,6 +16,7 @@ namespace HDMICapture.Core
         private int _overlayWidth;
         private int _overlayHeight;
         private string _cachedText = string.Empty;
+        private bool _cachedHighlight;
         private int _lastFrameHeight;
 
         // 微調整用パラメータ。基準サイズ(1080p)に対する倍率と、右下からの余白(px)。
@@ -24,14 +25,29 @@ namespace HDMICapture.Core
         public int MarginY { get; private set; } = 12;
         public HersheyFonts FontFace { get; private set; } = HersheyFonts.HersheySimplex;
 
-        public void UpdateText(string text, int frameHeight)
+        // highlight=true の間は文字を黄色で表示する(飛行機の疑いを示す)。
+        public void UpdateText(string text, int frameHeight, bool highlight = false)
         {
             lock (_lock)
             {
                 _lastFrameHeight = frameHeight;
-                if (text == _cachedText) return;
+                if (text == _cachedText && highlight == _cachedHighlight) return;
                 _cachedText = text;
+                _cachedHighlight = highlight;
                 Render(text, frameHeight);
+            }
+        }
+
+        // 現在の文字列はそのままで、色だけを切り替える。
+        public void SetHighlight(bool highlight)
+        {
+            lock (_lock)
+            {
+                if (highlight == _cachedHighlight) return;
+                _cachedHighlight = highlight;
+
+                if (!string.IsNullOrEmpty(_cachedText) && _lastFrameHeight > 0)
+                    Render(_cachedText, _lastFrameHeight);
             }
         }
 
@@ -56,6 +72,7 @@ namespace HDMICapture.Core
             {
                 _overlayPixels = null;
                 _cachedText = string.Empty;
+                _cachedHighlight = false;
             }
         }
 
@@ -74,7 +91,8 @@ namespace HDMICapture.Core
             // 半透明にすると背景側の元映像とではなくアプリ背景と混ざってしまう。
             using var mat = new Mat(h, w, MatType.CV_8UC4, new Scalar(0, 0, 0, 255));
             var origin = new Point(paddingX, h - paddingY - baseline);
-            Cv2.PutText(mat, text, origin, fontFace, fontScale, new Scalar(255, 255, 255, 255), thickness, LineTypes.AntiAlias);
+            var textColor = _cachedHighlight ? new Scalar(0, 255, 255, 255) : new Scalar(255, 255, 255, 255);
+            Cv2.PutText(mat, text, origin, fontFace, fontScale, textColor, thickness, LineTypes.AntiAlias);
 
             byte[] pixels = new byte[w * h * 4];
             System.Runtime.InteropServices.Marshal.Copy(mat.Data, pixels, 0, pixels.Length);

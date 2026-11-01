@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows;
@@ -62,6 +63,11 @@ namespace HDMICapture.App
         private List<MeteorDetectionRecord> _reviewRecords = new();
         private MeteorDetectionRecord? _reviewSelected;
 
+        // 検出一覧の表示項目。新しい検出で作り直さず差分更新することで、操作者の選択を保つ。
+        private readonly ObservableCollection<DetectionListItem> _reviewItems = new();
+        // 複数選択のうち、プレビューに表示している項目。
+        private DetectionListItem? _reviewPrimary;
+
         private Window? _enlargedPreviewWindow;
         private Image? _enlargedPreviewImage;
         private MediaElement? _enlargedPreviewMedia;
@@ -84,7 +90,11 @@ namespace HDMICapture.App
 
             _ = RefreshDevicesAsync();
 
+            listBoxDetections.ItemsSource = _reviewItems;
+
             _meteorController.MeteorDetected += MeteorController_MeteorDetected;
+            // 連続性が途切れたら、飛行機の疑いで黄色にしたオーバーレイを通常色へ戻す。
+            _meteorController.AircraftSuspicionCleared += (s, e) => _overlayRenderer.SetHighlight(false);
             _meteorController.ErrorOccurred += MeteorController_ErrorOccurred;
 
             RestoreSettings();
@@ -966,13 +976,16 @@ namespace HDMICapture.App
                     _reviewFolder != null &&
                     string.Equals(_reviewFolder, _meteorController.OutputDirectory, StringComparison.OrdinalIgnoreCase))
                 {
-                    LoadReviewFolder(_reviewFolder);
+                    // 一覧を作り直さず差分更新し、操作中の選択を維持する。
+                    SyncReviewItems(_reviewFolder);
                 }
             });
 
+            // 連続した露出で検出が続く場合は飛行機の可能性が高いため、黄色で表示する。
             _overlayRenderer.UpdateText(
                 $"Last detected:  {e.Record.ExposureStartTime:yyyy/MM/dd HH:mm:ss}  No.{e.Count}",
-                _captureHeight);
+                _captureHeight,
+                e.IsAircraftSuspected);
 
             System.Diagnostics.Debug.WriteLine($"流星検出: {e.Record.PhotoPath} / {e.Record.DiffPath} / {e.Record.MoviePath}");
         }
@@ -1048,42 +1061,200 @@ namespace HDMICapture.App
 
         private void LoadReviewFolder(string folder)
         {
+            bool folderChanged = !string.Equals(_reviewFolder, folder, StringComparison.OrdinalIgnoreCase);
             _reviewFolder = folder;
             labelReviewFolder.Text = folder;
 
-            // 検出日時 = 露出開始時刻(処理完了時刻ではない)を基準に、昇順・No.1からの連番で表示する。
-            // 番号はリスト内の位置から都度算出するため、削除後の再読み込みで自動的に振り直される。
-            _reviewRecords = MeteorDetectionListStore.Load(folder)
-                .OrderBy(r => r.ExposureStartTime)
-                .ToList();
+            // 別のフォルダに切り替えたときだけ一覧を空にする。同じフォルダの再読み込みでは
+            // 選択を保つため、差分更新のみ行う。
+            if (folderChanged)
+            {
+                _reviewItems.Clear();
+                _reviewPrimary = null;
+                _reviewSelected = null;
+                StopMovie();
+                UpdateReviewView();
+            }
 
-            listBoxDetections.ItemsSource = _reviewRecords
-                .Select((r, i) => $"No.{i + 1}  {r.ExposureStartTime:yyyy/MM/dd HH:mm:ss}")
-                .ToList();
-
-            buttonExportNumbered.IsEnabled = _reviewRecords.Count > 0;
-
-            _reviewSelected = null;
-            StopMovie();
-            UpdateReviewView();
+            SyncReviewItems(folder);
         }
 
+        private static string RecordKey(MeteorDetectionRecord r) => $"{r.DetectedTime.Ticks}|{r.PhotoPath}";
+
+        // 保存済みリストの内容を、表示項目へ差分反映する。既存項目は使い回すため、
+        // 新しい検出の追加や他の項目の削除があっても、選択中の項目は変わらない。
+        private void SyncReviewItems(string folder)
+        {
+            // 検出日時 = 露出開始時刻(処理完了時刻ではない)を基準に、昇順・No.1からの連番で表示する。
+            // 番号はリスト内の位置から都度算出するため、削除後も自動的に振り直される。
+            var records = MeteorDetectionListStore.Load(folder)
+                .OrderBy(r => r.ExposureStartTime)
+                .ToList();
+            _reviewRecords = records;
+
+            var keys = new HashSet<string>(records.Select(RecordKey));
+            foreach (var gone in _reviewItems.Where(i => !keys.Contains(RecordKey(i.Record))).ToList())
+                _reviewItems.Remove(gone);
+
+            var byKey = _reviewItems.ToDictionary(i => RecordKey(i.Record));
+            for (int i = 0; i < records.Count; i++)
+            {
+                string key = RecordKey(records[i]);
+                DetectionListItem? item;
+
+                if (i < _reviewItems.Count && RecordKey(_reviewItems[i].Record) == key)
+                {
+                    item = _reviewItems[i];
+                }
+                else if (byKey.TryGetValue(key, out item))
+                {
+                    _reviewItems.Move(_reviewItems.IndexOf(item), i);
+                }
+                else
+                {
+                    item = new DetectionListItem(records[i]);
+                    byKey[key] = item;
+                    _reviewItems.Insert(i, item);
+                }
+
+                item.Record = records[i];
+                item.IsConfirmed = records[i].IsConfirmed;
+            }
+
+            var suspected = FindAircraftSuspectedIndices(records);
+            for (int i = 0; i < records.Count; i++)
+            {
+                _reviewItems[i].Text = $"No.{i + 1}  {records[i].ExposureStartTime:yyyy/MM/dd HH:mm:ss}";
+                _reviewItems[i].IsAircraftSuspected = suspected.Contains(i);
+            }
+
+            if (_reviewPrimary != null && _reviewItems.Contains(_reviewPrimary))
+                _reviewSelected = _reviewPrimary.Record;
+
+            buttonExportNumbered.IsEnabled = _reviewRecords.Count > 0;
+        }
+
+        // 露出開始時刻が連続している検出が3つ以上続く範囲を、飛行機の疑いとして返す。
+        private HashSet<int> FindAircraftSuspectedIndices(List<MeteorDetectionRecord> sorted)
+        {
+            var result = new HashSet<int>();
+            int runStart = 0;
+
+            for (int i = 1; i <= sorted.Count; i++)
+            {
+                bool continues = i < sorted.Count && MeteorDetectionController.AreConsecutive(
+                    sorted[i - 1].ExposureStartTime,
+                    sorted[i].ExposureStartTime,
+                    sorted[i - 1].ExposureSeconds > 0 ? sorted[i - 1].ExposureSeconds : _appSettings.ExposureSeconds);
+                if (continues) continue;
+
+                if (i - runStart >= MeteorDetectionController.AircraftStreakThreshold)
+                    for (int k = runStart; k < i; k++) result.Add(k);
+                runStart = i;
+            }
+
+            return result;
+        }
+
+        // プレビューに表示する項目は、新しく選択に加わったものを優先する(複数選択の途中で
+        // 先頭の項目へ戻らないように)。選択に変化が無い場合はプレビューを更新しない。
         private void ListBoxDetections_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            int idx = listBoxDetections.SelectedIndex;
-            _reviewSelected = (idx >= 0 && idx < _reviewRecords.Count) ? _reviewRecords[idx] : null;
+            var primary = e.AddedItems.OfType<DetectionListItem>().LastOrDefault();
+            if (primary == null)
+            {
+                if (_reviewPrimary != null && listBoxDetections.SelectedItems.Contains(_reviewPrimary)) return;
+                primary = listBoxDetections.SelectedItems.OfType<DetectionListItem>().FirstOrDefault();
+            }
+
+            if (ReferenceEquals(primary, _reviewPrimary) && primary != null) return;
+
+            _reviewPrimary = primary;
+            _reviewSelected = primary?.Record;
             UpdateReviewView();
         }
 
         // 選択中と同じ項目を再クリックした場合はSelectionChangedが発火しないため、
         // 明示的に再生し直す(動画再生を最初からやり直したい場合の入口)。
+        // Ctrl/Shiftによる複数選択の操作や、チェックボックスの操作では再生し直さない。
         private void ListBoxDetections_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
         {
-            if (e.OriginalSource is DependencyObject src)
+            if (Keyboard.Modifiers != ModifierKeys.None) return;
+
+            if (e.OriginalSource is DependencyObject src && !IsInside<CheckBox>(src))
             {
                 var item = ItemsControl.ContainerFromElement(listBoxDetections, src) as ListBoxItem;
                 if (item != null && item.IsSelected)
                     UpdateReviewView();
+            }
+        }
+
+        private static bool IsInside<T>(DependencyObject? d) where T : DependencyObject
+        {
+            while (d != null)
+            {
+                if (d is T) return true;
+                d = d is Visual || d is System.Windows.Media.Media3D.Visual3D
+                    ? VisualTreeHelper.GetParent(d)
+                    : LogicalTreeHelper.GetParent(d);
+            }
+            return false;
+        }
+
+        // 右クリックした項目が選択外なら、その項目だけを選択する(複数選択中の項目上なら選択を保つ)。
+        private void ListBoxDetections_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.OriginalSource is DependencyObject src &&
+                ItemsControl.ContainerFromElement(listBoxDetections, src) is ListBoxItem item &&
+                !item.IsSelected)
+            {
+                listBoxDetections.SelectedItems.Clear();
+                item.IsSelected = true;
+            }
+        }
+
+        private void ListBoxDetections_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Delete)
+            {
+                DeleteSelectedDetections();
+                e.Handled = true;
+            }
+        }
+
+        private void DetectionConfirmed_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not FrameworkElement { DataContext: DetectionListItem clicked }) return;
+
+            // 複数選択中の項目のチェックを操作した場合は、選択中のすべてへ同じ状態を適用する。
+            var selected = listBoxDetections.SelectedItems.OfType<DetectionListItem>().ToList();
+            var targets = selected.Count > 1 && selected.Contains(clicked) ? selected : new List<DetectionListItem> { clicked };
+            ApplyConfirmed(targets, clicked.IsConfirmed);
+        }
+
+        private void MenuConfirmSelected_Click(object sender, RoutedEventArgs e) =>
+            ApplyConfirmed(listBoxDetections.SelectedItems.OfType<DetectionListItem>().ToList(), true);
+
+        private void MenuUnconfirmSelected_Click(object sender, RoutedEventArgs e) =>
+            ApplyConfirmed(listBoxDetections.SelectedItems.OfType<DetectionListItem>().ToList(), false);
+
+        private void MenuDeleteSelected_Click(object sender, RoutedEventArgs e) => DeleteSelectedDetections();
+
+        private void ApplyConfirmed(List<DetectionListItem> targets, bool confirmed)
+        {
+            if (_reviewFolder == null || targets.Count == 0) return;
+
+            var previous = targets.Select(t => t.IsConfirmed).ToList();
+            foreach (var t in targets) t.IsConfirmed = confirmed;
+
+            try
+            {
+                MeteorDetectionListStore.SetConfirmed(_reviewFolder, targets.Select(t => t.Record), confirmed);
+            }
+            catch (Exception ex)
+            {
+                for (int i = 0; i < targets.Count; i++) targets[i].IsConfirmed = previous[i];
+                MessageBox.Show($"確認済みの保存に失敗しました:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
@@ -1334,23 +1505,48 @@ namespace HDMICapture.App
             }
         }
 
-        private void ButtonMarkFalsePositive_Click(object sender, RoutedEventArgs e)
-        {
-            if (_reviewSelected == null || _reviewFolder == null) return;
+        private void ButtonMarkFalsePositive_Click(object sender, RoutedEventArgs e) => DeleteSelectedDetections();
 
-            var result = MessageBox.Show(
-                "この検出を誤検知として削除しますか?\n(画像・動画ファイルは _del フォルダへ移動されます)",
-                "確認", MessageBoxButton.YesNo, MessageBoxImage.Question);
-            if (result != MessageBoxResult.Yes) return;
+        // 選択中の項目(複数可)を誤検知として削除する。確認済みの項目は削除しない。
+        private void DeleteSelectedDetections()
+        {
+            if (_reviewFolder == null) return;
+
+            var targets = listBoxDetections.SelectedItems.OfType<DetectionListItem>().ToList();
+            if (targets.Count == 0) return;
+
+            var deletable = targets.Where(t => !t.IsConfirmed).ToList();
+            int skipped = targets.Count - deletable.Count;
+            if (deletable.Count == 0)
+            {
+                MessageBox.Show("選択された項目はすべて確認済みのため、削除できません。\n(チェックを外すと削除できます)",
+                    "確認", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            string message = $"選択した {deletable.Count} 件を誤検知として削除しますか?\n(画像・動画ファイルは _del フォルダへ移動されます)";
+            if (skipped > 0) message += $"\n\n確認済みの {skipped} 件は削除されません。";
+            if (MessageBox.Show(message, "確認", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+                return;
+
+            // 削除後は、削除した先頭の位置にある項目を選択して、続けて作業できるようにする。
+            int firstIndex = deletable.Min(t => _reviewItems.IndexOf(t));
 
             try
             {
-                MeteorDetectionListStore.MarkAsFalsePositive(_reviewFolder, _reviewSelected);
-                LoadReviewFolder(_reviewFolder);
+                MeteorDetectionListStore.MarkAsFalsePositive(_reviewFolder, deletable.Select(t => t.Record));
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"削除に失敗しました:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+
+            SyncReviewItems(_reviewFolder);
+
+            if (_reviewItems.Count > 0 && listBoxDetections.SelectedItems.Count == 0)
+            {
+                int next = Math.Clamp(firstIndex, 0, _reviewItems.Count - 1);
+                listBoxDetections.SelectedItem = _reviewItems[next];
             }
         }
 

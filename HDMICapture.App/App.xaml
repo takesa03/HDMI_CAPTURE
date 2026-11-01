@@ -159,8 +159,29 @@
             <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
             <Setter Property="BorderBrush" Value="{StaticResource BorderBrushDark}"/>
         </Style>
+        <!-- 既定のテンプレートは、フォーカスが外れた選択行を明るい灰色にする。検出一覧は
+             黄色・緑の文字で状態を示すため、明るい背景だと読めなくなる。選択行を常に
+             暗い青にして、文字色の識別を保つ。 -->
         <Style TargetType="ListBoxItem">
             <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+            <Setter Property="Padding" Value="4,2"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="itemBorder" Background="Transparent" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="itemBorder" Property="Background" Value="#33FFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="itemBorder" Property="Background" Value="#2A4A7F"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <!-- DatePickerはControlBackgroundBrush(グレー)を共有するため、Button/ComboBoxと
              同様に文字色を黒にして揃える。 -->

@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 
 namespace HDMICapture.Core
@@ -45,23 +46,67 @@ namespace HDMICapture.Core
             }
         }
 
+        private static bool IsSameRecord(MeteorDetectionRecord a, MeteorDetectionRecord b) =>
+            a.DetectedTime == b.DetectedTime && a.PhotoPath == b.PhotoPath;
+
         // 誤検知としてマークする: 画像/動画ファイルを _del フォルダへ移動し、リストから削除する。
-        public static void MarkAsFalsePositive(string outputDirectory, MeteorDetectionRecord record)
+        public static void MarkAsFalsePositive(string outputDirectory, MeteorDetectionRecord record) =>
+            MarkAsFalsePositive(outputDirectory, new[] { record });
+
+        // 複数件をまとめて誤検知として削除する(リストの読み書きは1回)。
+        // 確認済み(IsConfirmed)のものは、呼び出し側の状態ではなく保存されている状態を見て
+        // 削除せず残す。実際に削除した件数を返す。
+        public static int MarkAsFalsePositive(string outputDirectory, IEnumerable<MeteorDetectionRecord> records)
         {
             string delDir = Path.Combine(outputDirectory, "_del");
-            Directory.CreateDirectory(delDir);
-
-            MoveIfExists(record.PhotoPath, delDir);
-            MoveIfExists(record.DiffPath, delDir);
-            MoveIfExists(record.MoviePath, delDir);
+            int removed = 0;
 
             lock (FileLock)
             {
                 var list = LoadUnlocked(outputDirectory);
-                list.RemoveAll(r =>
-                    r.DetectedTime == record.DetectedTime &&
-                    r.PhotoPath == record.PhotoPath);
-                SaveUnlocked(outputDirectory, list);
+                try
+                {
+                    foreach (var record in records)
+                    {
+                        var stored = list.FirstOrDefault(r => IsSameRecord(r, record));
+                        if (stored == null || stored.IsConfirmed) continue;
+
+                        Directory.CreateDirectory(delDir);
+                        MoveIfExists(stored.PhotoPath, delDir);
+                        MoveIfExists(stored.DiffPath, delDir);
+                        MoveIfExists(stored.MoviePath, delDir);
+
+                        list.Remove(stored);
+                        removed++;
+                    }
+                }
+                finally
+                {
+                    // 途中で失敗しても、ここまでに移動したファイル分はリストへ反映する。
+                    if (removed > 0) SaveUnlocked(outputDirectory, list);
+                }
+            }
+
+            return removed;
+        }
+
+        // 確認済みフラグを保存する。
+        public static void SetConfirmed(string outputDirectory, IEnumerable<MeteorDetectionRecord> records, bool confirmed)
+        {
+            lock (FileLock)
+            {
+                var list = LoadUnlocked(outputDirectory);
+                bool changed = false;
+                foreach (var record in records)
+                {
+                    var stored = list.FirstOrDefault(r => IsSameRecord(r, record));
+                    if (stored != null && stored.IsConfirmed != confirmed)
+                    {
+                        stored.IsConfirmed = confirmed;
+                        changed = true;
+                    }
+                }
+                if (changed) SaveUnlocked(outputDirectory, list);
             }
         }
 

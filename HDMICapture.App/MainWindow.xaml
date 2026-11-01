@@ -70,9 +70,33 @@
                         <Button Name="buttonReviewRefresh" Content="更新" Height="22" Click="ButtonReviewRefresh_Click" Margin="4,0,0,0" Padding="4,0" FontSize="10"/>
                     </StackPanel>
 
+                    <!-- 複数選択(Shift/Ctrl)に対応。チェックは「確認済み」(削除不可・緑表示)、
+                         黄色の文字は連続した検出(飛行機の疑い)。 -->
                     <ListBox Name="listBoxDetections" Grid.Row="2" FontSize="11" Margin="0,0,0,8"
+                              SelectionMode="Extended"
                               SelectionChanged="ListBoxDetections_SelectionChanged"
-                              PreviewMouseLeftButtonUp="ListBoxDetections_PreviewMouseLeftButtonUp"/>
+                              PreviewMouseLeftButtonUp="ListBoxDetections_PreviewMouseLeftButtonUp"
+                              PreviewMouseRightButtonDown="ListBoxDetections_PreviewMouseRightButtonDown"
+                              PreviewKeyDown="ListBoxDetections_PreviewKeyDown">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal">
+                                    <CheckBox IsChecked="{Binding IsConfirmed, Mode=TwoWay}" Click="DetectionConfirmed_Click"
+                                              VerticalAlignment="Center" Margin="0,0,6,0"
+                                              ToolTip="確認済み(流星として確認。削除できなくなります)"/>
+                                    <TextBlock Text="{Binding Text}" Foreground="{Binding TextBrush}" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                        <ListBox.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="誤検知として削除" Click="MenuDeleteSelected_Click"/>
+                                <Separator/>
+                                <MenuItem Header="確認済みにする" Click="MenuConfirmSelected_Click"/>
+                                <MenuItem Header="確認済みを解除" Click="MenuUnconfirmSelected_Click"/>
+                            </ContextMenu>
+                        </ListBox.ContextMenu>
+                    </ListBox>
 
                     <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,0,0,8">
                         <RadioButton Name="radioViewPhoto" Content="比較明合成" GroupName="reviewViewMode" IsChecked="True" Checked="ViewMode_Changed" FontSize="11" VerticalAlignment="Center" Margin="0,0,10,0"/>
